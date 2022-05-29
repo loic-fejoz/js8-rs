@@ -14,3 +14,10 @@ so as to do more embedded projects using this mode. I especially aims to use it 
 
 * https://bitbucket.org/widefido/js8call.git
 * https://github.com/kgoba/ft8_lib
+
+## License
+
+Dual licensed:
+
+* [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0)
+* [MIT license](http://opensource.org/licenses/MIT)
