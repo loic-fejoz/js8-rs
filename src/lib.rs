@@ -1,4 +1,5 @@
 use regex::Regex;
+use crc_all::Crc;
 
 pub const NBASE: u32 = 37 * 36 * 10 * 27 * 27 * 27;
 const NTOKENS: u32 = 2063592u32;
@@ -198,7 +199,8 @@ pub fn fmtmsg(msg: &str) -> String {
     msg.into_owned()
 }
 
-/// Pack a JT4/JT9/JT65 message into twelve 6-bits symbols
+/// Pack a JT4/JT9/JT65 message into twelve 6-bits symbols + 3 bits for type,
+/// ie 75 bits
 pub fn pack77(msg: &str) -> Option<[u8; 10]> {
     let delimiters_index: Vec<_> = msg.match_indices(char::is_whitespace).collect();
     let first_space_index = delimiters_index[0].0 + 1;
@@ -228,6 +230,16 @@ pub fn pack77(msg: &str) -> Option<[u8; 10]> {
     Some(result)
 }
 
+pub fn crc12(data: &[u8]) -> u16 {
+    let mut crc12 = Crc::<u16>::new(0xc06, 12, 0x00, 0x00, false);
+    crc12.update(data)
+}
+
+// pub fn crc14(data: &[u8]) -> u16 {
+//     let mut crc14 = Crc::<u16>::new(0x2757, 14, 0x00, 0x00, false);
+//     crc14.update(data)
+// }
+
 #[cfg(test)]
 extern crate quickcheck;
 #[cfg(test)]
@@ -237,7 +249,7 @@ extern crate quickcheck_macros;
 #[cfg(test)]
 mod tests {
     use crate::{char_index, fmtmsg, grid2deg, GridError};
-    use crate::{pack28, pack_grid_or_report, pack77};
+    use crate::{pack28, pack_grid_or_report, pack77, crc12};
     use crate::{NBASE, NGBASE};
     use quickcheck::TestResult;
 
@@ -396,7 +408,17 @@ mod tests {
     fn pack77_test() {
         assert_eq!(
             pack77("CQ DL1ABC JO62"),
-            Some([0x00, 0x00, 0x00, 0x23, 0x44, 0x4A, 0x11, 0x91, 0x3F, 0x88])
+            Some([250, 8, 49, 147, 68, 74, 17, 142, 209, 8])
+        );
+    }
+
+    #[test]
+    fn crc_test() {
+        let data = pack77("CQ DL1ABC JO62").unwrap();
+        let crc = crc12(&data);
+        assert_eq!(
+            crc,
+            2688
         );
     }
 }
