@@ -5,5 +5,5 @@ extern crate strum_macros;
 extern crate quickcheck_macros;
 
 //pub mod pack;
-//pub mod js8frame;
+pub mod js8frame;
 pub mod coumpound;
