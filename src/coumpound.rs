@@ -1,14 +1,14 @@
 use std::fmt;
 use strum::IntoEnumIterator;
-use strum_macros::{EnumIter, EnumString, FromRepr};
+use strum_macros::{EnumIter, FromRepr};
 
 #[cfg(test)]
 use quickcheck::{empty_shrinker, single_shrinker, Arbitrary, Gen};
 
-#[derive(Clone, FromRepr, EnumIter, PartialEq, Debug, Hash, Copy)]
+#[derive(Clone, FromRepr, EnumIter, PartialEq, Eq, Debug, Hash, Copy)]
 #[repr(u32)]
 #[allow(non_camel_case_types)]
-pub enum BaseCallSign {
+pub enum BaseGroup {
     Incomplete = 37 * 36 * 10 * 27 * 27 * 27,
     AllCall,
     JS8Net,
@@ -77,7 +77,7 @@ pub enum BaseCallSign {
     QRO,      // QRO GROUP
 }
 
-impl fmt::Display for BaseCallSign {
+impl fmt::Display for BaseGroup {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let strval = format!("@{:?}", self);
         let strval = strval.replace("_", "/");
@@ -85,11 +85,11 @@ impl fmt::Display for BaseCallSign {
     }
 }
 
-impl std::str::FromStr for BaseCallSign {
+impl std::str::FromStr for BaseGroup {
     type Err = ::strum::ParseError;
 
-    fn from_str(s: &str) -> ::core::result::Result<BaseCallSign, Self::Err> {
-        for callsign in BaseCallSign::iter() {
+    fn from_str(s: &str) -> ::core::result::Result<BaseGroup, Self::Err> {
+        for callsign in BaseGroup::iter() {
             if s.eq_ignore_ascii_case(&callsign.to_string()) {
                 return ::core::result::Result::Ok(callsign);
             }
@@ -99,28 +99,28 @@ impl std::str::FromStr for BaseCallSign {
 }
 
 #[cfg(test)]
-impl Arbitrary for BaseCallSign {
-    fn arbitrary(g: &mut Gen) -> BaseCallSign {
+impl Arbitrary for BaseGroup {
+    fn arbitrary(g: &mut Gen) -> BaseGroup {
         let idx = u32::arbitrary(g);
-        let idx = idx % (BaseCallSign::QRO as u32 - BaseCallSign::Incomplete as u32);
-        let idx = idx + (BaseCallSign::Incomplete as u32);
-        let s = BaseCallSign::from_repr(idx);
+        let idx = idx % (BaseGroup::QRO as u32 - BaseGroup::Incomplete as u32);
+        let idx = idx + (BaseGroup::Incomplete as u32);
+        let s = BaseGroup::from_repr(idx);
         s.unwrap()
     }
 
     fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
-        if *self == BaseCallSign::Incomplete {
+        if *self == BaseGroup::Incomplete {
             return empty_shrinker();
         }
-        single_shrinker(BaseCallSign::from_repr(*self as u32 - 1).unwrap())
+        single_shrinker(BaseGroup::from_repr(*self as u32 - 1).unwrap())
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone, Hash)]
 pub enum Compound {
     GroupCall { name: String },
     Callsign { base: String, is_portable: bool },
-    BaseCallsign { kind: BaseCallSign },
+    BaseGroup { kind: BaseGroup },
 }
 
 impl fmt::Display for Compound {
@@ -130,7 +130,124 @@ impl fmt::Display for Compound {
             Self::Callsign { base, is_portable } => {
                 write!(f, "{}{}", base, if *is_portable { "/P" } else { "" })
             }
-            Self::BaseCallsign { kind } => write!(f, "{}", kind),
+            Self::BaseGroup { kind } => write!(f, "{}", kind),
+        }
+    }
+}
+
+impl std::str::FromStr for Compound {
+    type Err = ::strum::ParseError;
+
+    fn from_str(s: &str) -> ::core::result::Result<Compound, Self::Err> {
+        if s.is_empty() {
+            return ::core::result::Result::Err(::strum::ParseError::VariantNotFound);
+        }
+        if s.starts_with("@") {
+            // This is a group
+            let base_group = BaseGroup::from_str(s);
+            if base_group.is_ok() {
+                let base_group = base_group.expect("");
+                let base_group = Compound::BaseGroup { kind: base_group };
+                return ::core::result::Result::Ok(base_group);
+            } else {
+                let groupcall = s[1..].to_string();
+                let groupcall = Compound::GroupCall { name: groupcall };
+                return ::core::result::Result::Ok(groupcall);
+            }
+        } else {
+            // This is a callsign
+            //TODO check for valid callsign
+            let is_portable = s.ends_with("/P");
+            let s_len = s.len() - if is_portable { 2 } else { 0};
+            let base = s[..s_len].to_string();
+            let callsign = Compound::Callsign { base, is_portable };
+            return ::core::result::Result::Ok(callsign);
+        }
+    }
+}
+
+#[cfg(test)]
+impl Arbitrary for Compound {
+    fn arbitrary(g: &mut Gen) -> Self {
+        let y = u8::arbitrary(g) % 3;
+        match y {
+            0 => Compound::GroupCall {
+                name: String::arbitrary(g),
+            },
+            1 => {
+                // [a-zA-Z0-9]{1,3}[0-9][a-zA-Z0-9]{0,3}[a-zA-Z]
+                // See https://gist.github.com/JoshuaCarroll/f6b2c64992dfe23feed49a117f5d1a43
+
+                let digits: Vec<char> = ('0'..'9').collect();
+                let a_zA_Z: Vec<char> = ('a'..'z').chain('A'..'Z').collect();
+                let a_zA_Z0_9: Vec<char> = ('a'..'z').chain('A'..'Z').chain('0'..'9').collect();
+
+                let digits = &digits[..];
+                let a_zA_Z = &a_zA_Z[..];
+                let a_zA_Z0_9 = &a_zA_Z0_9[..];
+
+                let mut base: Vec<char> = Vec::new();
+                let nc = *g.choose(&[1 as usize,2,3]).expect("");
+                for _ in 0..nc {
+
+                    let c = *g.choose(a_zA_Z0_9).expect("");
+                    base.push(c);
+                }
+                base.push(*g.choose(digits).expect(""));
+                let nc = 1+*g.choose(&[0, 1 as usize,2,3]).expect("");
+                for _ in 0..nc {
+
+                    let c = *g.choose(a_zA_Z0_9).expect("");
+                    base.push(c);
+                }
+                base.push(*g.choose(a_zA_Z).expect(""));
+                let base: String = base.iter().collect();
+                
+        
+                Compound::Callsign {
+                    base,
+                    is_portable: bool::arbitrary(g),
+                }
+            },
+            _ => Compound::BaseGroup {
+                kind: BaseGroup::arbitrary(g),
+            },
+        }
+    }
+
+    fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
+        match self {
+            Compound::GroupCall { name } => {
+                Box::new(name.shrink().map(|n| Compound::GroupCall { name: n }))
+            }
+            Self::Callsign { base, is_portable } => {
+                // let base = base.clone();
+                // let is_portable = *is_portable;
+                // let mut chain = empty_shrinker();
+                // if is_portable {
+                //     chain = single_shrinker(Compound::Callsign {
+                //         base: base.clone(),
+                //         is_portable: false,
+                //     });
+                // }
+                // let chain = chain.chain(base.shrink().map(move |n| Compound::Callsign {
+                //     base: n,
+                //     is_portable: is_portable,
+                // }));
+                // Box::new(chain)
+                if *is_portable {
+                    single_shrinker(Compound::Callsign {
+                                base: base.clone(),
+                                is_portable: false,
+                            })
+                } else {
+                    empty_shrinker()
+                }
+            }
+            Self::BaseGroup { kind } => {
+                Box::new(kind.shrink().map(|n| Compound::BaseGroup { kind: n }))
+            }
+            _ => empty_shrinker(),
         }
     }
 }
@@ -143,26 +260,61 @@ mod tests {
 
     use std::str::FromStr;
 
-    use crate::coumpound::{BaseCallSign, Compound};
+    use crate::coumpound::{BaseGroup, Compound};
     use quickcheck::TestResult;
 
     #[test]
     fn test() {
-        assert_eq!("@Incomplete", BaseCallSign::Incomplete.to_string());
+        assert_eq!("@Incomplete", BaseGroup::Incomplete.to_string());
     }
 
     #[test]
-    fn test_group_0() {
-        assert_eq!("@GROUP/0", BaseCallSign::GROUP_0.to_string());
+    fn test_base_group_0() {
+        assert_eq!("@GROUP/0", BaseGroup::GROUP_0.to_string());
         assert_eq!(
-            BaseCallSign::GROUP_0,
-            BaseCallSign::from_str(&"@GROUP/0").expect("can read group 0")
+            BaseGroup::GROUP_0,
+            BaseGroup::from_str(&"@GROUP/0").expect("can read group 0")
+        );
+    }
+
+    #[test]
+    fn test_compound_group_0() {
+        let group0 = Compound::BaseGroup {
+            kind: BaseGroup::GROUP_0,
+        };
+        assert_eq!("@GROUP/0", group0.to_string());
+        assert_eq!(
+            group0,
+            Compound::from_str(&"@GROUP/0").expect("can read group 0")
+        );
+    }
+
+    #[test]
+    fn test_compound_callsigns() {
+        let c = Compound::Callsign {
+            base: "F4LOI".to_string(),
+            is_portable: true
+        };
+        assert_eq!("F4LOI/P", c.to_string());
+        assert_eq!(
+            c,
+            Compound::from_str(&"F4LOI/P").expect("can read portable callsign")
         );
     }
 
     #[quickcheck]
-    fn reparse_basecallsign(c: BaseCallSign) -> TestResult {
-        let cc = BaseCallSign::from_str(&c.to_string());
+    fn reparse_basegroup(c: BaseGroup) -> TestResult {
+        let cc = BaseGroup::from_str(&c.to_string());
+        if let Ok(cc) = cc {
+            TestResult::from_bool(c == cc)
+        } else {
+            TestResult::failed()
+        }
+    }
+
+    #[quickcheck]
+    fn reparse_compound(c: Compound) -> TestResult {
+        let cc = Compound::from_str(&c.to_string());
         if let Ok(cc) = cc {
             TestResult::from_bool(c == cc)
         } else {
