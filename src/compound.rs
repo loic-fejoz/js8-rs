@@ -79,7 +79,7 @@ pub enum BaseGroup {
 
 impl fmt::Display for BaseGroup {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let strval = format!("@{:?}", self);
+        let strval = format!("@{:?}", self).to_uppercase();
         let strval = strval.replace("_", "/");
         write!(f, "{}", strval)
     }
@@ -144,6 +144,7 @@ impl std::str::FromStr for Compound {
         }
         if s.starts_with("@") {
             // This is a group
+            //TODO [@][A-Z0-9\/]{0,3}[\/]?[A-Z0-9\/]{0,3}[\/]?[A-Z0-9\/]{0,3}
             let base_group = BaseGroup::from_str(s);
             if base_group.is_ok() {
                 let base_group = base_group.expect("");
@@ -169,18 +170,29 @@ impl std::str::FromStr for Compound {
 #[cfg(test)]
 impl Arbitrary for Compound {
     fn arbitrary(g: &mut Gen) -> Self {
-        let y = u8::arbitrary(g) % 3;
+        let y = u8::arbitrary(g) % 4;
         match y {
-            0 => Compound::GroupCall {
-                name: String::arbitrary(g),
+            0 => {
+                    let mut valid_characters: Vec<char> = ('A'..'Z').chain('0'..'9').collect();
+                    valid_characters.push('/');
+                    let valid_characters = &valid_characters[..];
+                    let s_size = u8::arbitrary(g) % 8;
+                    let name: String = (0..s_size).map(|_| g.choose(valid_characters).unwrap()).collect();
+                    // A groupcall must not be basegroup
+                    for a_basegroup in BaseGroup::iter() {
+                        if name == a_basegroup.to_string() {
+                            return Compound::BaseGroup { kind: a_basegroup };
+                        }
+                    }
+                    Compound::GroupCall{name}
             },
             1 => {
                 // [a-zA-Z0-9]{1,3}[0-9][a-zA-Z0-9]{0,3}[a-zA-Z]
                 // See https://gist.github.com/JoshuaCarroll/f6b2c64992dfe23feed49a117f5d1a43
 
                 let digits: Vec<char> = ('0'..'9').collect();
-                let a_zA_Z: Vec<char> = ('a'..'z').chain('A'..'Z').collect();
-                let a_zA_Z0_9: Vec<char> = ('a'..'z').chain('A'..'Z').chain('0'..'9').collect();
+                let a_zA_Z: Vec<char> = ('A'..'Z').collect();
+                let a_zA_Z0_9: Vec<char> = ('A'..'Z').chain('0'..'9').collect();
 
                 let digits = &digits[..];
                 let a_zA_Z = &a_zA_Z[..];
@@ -260,12 +272,12 @@ mod tests {
 
     use std::str::FromStr;
 
-    use crate::coumpound::{BaseGroup, Compound};
+    use crate::compound::{BaseGroup, Compound};
     use quickcheck::TestResult;
 
     #[test]
     fn test() {
-        assert_eq!("@Incomplete", BaseGroup::Incomplete.to_string());
+        assert_eq!("@INCOMPLETE", BaseGroup::Incomplete.to_string());
     }
 
     #[test]
@@ -300,6 +312,12 @@ mod tests {
             c,
             Compound::from_str(&"F4LOI/P").expect("can read portable callsign")
         );
+        assert_eq!(
+            Compound::BaseGroup {
+                kind: BaseGroup::HB
+            },
+            Compound::from_str(&"@HB").expect("can read group call")
+        );
     }
 
     #[quickcheck]
@@ -314,6 +332,8 @@ mod tests {
 
     #[quickcheck]
     fn reparse_compound(c: Compound) -> TestResult {
+        // only works if group name is not a basegroup
+
         let cc = Compound::from_str(&c.to_string());
         if let Ok(cc) = cc {
             TestResult::from_bool(c == cc)

@@ -1,3 +1,5 @@
+use lazy_static::lazy_static;
+use regex::Regex;
 use std::fmt;
 use strum::IntoEnumIterator;
 use strum_macros::{EnumIter, FromRepr};
@@ -5,7 +7,7 @@ use strum_macros::{EnumIter, FromRepr};
 #[cfg(test)]
 use quickcheck::{empty_shrinker, single_shrinker, Arbitrary, Gen};
 
-use crate::coumpound::Compound;
+use crate::{compound::Compound, js8frame};
 
 // submode types
 #[derive(PartialEq, Eq, Debug)]
@@ -117,7 +119,7 @@ impl Command {
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let strval = match *self {
-            Command::DitDit => " Dit DIT".to_string(),
+            Command::DitDit => " DIT DIT".to_string(),
             Command::Relay => ">".to_string(),
             Command::MsgTo => " MSG TO:".to_string(),
             Command::QueryMsgs => " QUERY MSGS".to_string(),
@@ -180,14 +182,126 @@ pub enum FrameType {
     FrameDataCompressed = 0b110, // actually 0b11x
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone, Hash, Eq)]
 pub enum Frame {
     FrameHeartbeat {},
     FrameCQ {},
     FrameDirectedMessage {
         from: Option<Compound>,
         to: Option<Compound>,
+        cmd: Option<Command>,
     },
+}
+
+impl Frame {
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Frame::FrameDirectedMessage {
+                from: _,
+                to: None,
+                cmd: _,
+            } => false,
+            Frame::FrameDirectedMessage {
+                from: _,
+                to: Some(Compound::GroupCall { name }),
+                cmd: _,
+            } => !name.is_empty(),
+            _ => true,
+        }
+    }
+}
+
+impl fmt::Display for Frame {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Frame::FrameDirectedMessage { from, to, cmd } => {
+                let mut s: Vec<String> = Vec::new();
+                let mut has_from = false;
+                if let Some(from) = from {
+                    has_from = true;
+                    s.push(format!("{}:", from));
+                }
+                if let Some(to) = to {
+                    if has_from {
+                        s.push(" ".to_string());
+                    }
+                    s.push(format!("{}", to));
+                }
+                if let Some(cmd) = cmd {
+                    s.push(cmd.to_string());
+                }
+                let s = s.join("");
+                write!(f, "{}", s)
+            }
+            _ => write!(f, "{:?}", self),
+        }
+    }
+}
+
+impl std::str::FromStr for Frame {
+    type Err = ::strum::ParseError;
+
+    fn from_str(s: &str) -> ::core::result::Result<Self, Self::Err> {
+        static callsign_pattern: &str = "(?P<callsign>[@]?[A-Z0-9/]+)";
+        static optional_cmd_pattern: &str = "(?P<cmd>\\s?(?:AGN[?]|QSL[?]|HW CPY[?]|MSG TO[:]|SNR[?]|INFO[?]|GRID[?]|STATUS[?]|QUERY MSGS[?]|HEARING[?]|(?:(?:STATUS|HEARING|QUERY CALL|QUERY MSGS|QUERY|CMD|MSG|NACK|ACK|73|YES|NO|HEARTBEAT SNR|SNR|QSL|RR|SK|FB|INFO|GRID|DIT DIT))|[?> ]))?";
+        static optional_num_pattern: &str = "(?P<num>\\s?[-+]?(?:3[01]|[0-2]?[0-9]))?";
+
+        lazy_static! {
+            static ref directed_frame_pattern: String =
+                "^".to_owned() + callsign_pattern + optional_cmd_pattern + optional_num_pattern;
+            static ref directed_re: Regex = Regex::new(&directed_frame_pattern).unwrap();
+            static ref callsign_re: Regex = Regex::new(callsign_pattern).unwrap();
+            static ref optional_cmd_re: Regex = Regex::new(optional_cmd_pattern).unwrap();
+            static ref optional_num_re: Regex = Regex::new(optional_num_pattern).unwrap();
+            static ref optional_grid_re: Regex =
+                Regex::new("(?<grid>\\s?[A-R]{2}[0-9]{2})?").unwrap();
+            static ref optional_extended_grid_re: Regex =
+                Regex::new("^(?<grid>\\s?(?:[A-R]{2}[0-9]{2}(?:[A-X]{2}(?:[0-9]{2})?)*))?")
+                    .unwrap();
+        }
+        if let Some(x) = directed_re.captures(s) {
+            let mut the_cmd: Option<Command> = None;
+            let mut the_callsign: Option<Compound> = None;
+            if let Some(callsign) = x.name("callsign") {
+                let callsign = callsign.as_str();
+                if let Ok(callsign) = Compound::from_str(callsign) {
+                    the_callsign = Some(callsign);
+                }
+            }
+            if let Some(cmd) = x.name("cmd") {
+                let cmd = cmd.as_str();
+                if let Ok(cmd) = Command::from_str(cmd) {
+                    the_cmd = Some(cmd);
+                }
+            }
+            let a_frame = Frame::FrameDirectedMessage {
+                from: None,
+                to: the_callsign,
+                cmd: the_cmd,
+            };
+            return Ok(a_frame);
+        }
+        ::core::result::Result::Err(::strum::ParseError::VariantNotFound)
+    }
+}
+
+#[cfg(test)]
+impl Arbitrary for Frame {
+    fn arbitrary(g: &mut Gen) -> Frame {
+        let mut the_callsign: Option<Compound> = None;
+        if bool::arbitrary(g) {
+            the_callsign = Some(Compound::arbitrary(g));
+        }
+        let mut the_cmd: Option<Command> = None;
+        if bool::arbitrary(g) {
+            the_cmd = Some(Command::arbitrary(g));
+        }
+        Frame::FrameDirectedMessage {
+            from: None,
+            to: the_callsign,
+            cmd: the_cmd,
+        }
+    }
 }
 
 /// frame type transmitted via itype and decoded by the ft8 decoded
@@ -214,7 +328,10 @@ mod tests {
 
     use std::str::FromStr;
 
-    use crate::js8frame::Command;
+    use crate::{
+        compound::{Compound, BaseGroup},
+        js8frame::{Command, Frame},
+    };
     use quickcheck::TestResult;
 
     #[test]
@@ -263,6 +380,136 @@ mod tests {
     #[quickcheck]
     fn reparse_command(c: Command) -> TestResult {
         let cc = Command::from_str(&c.to_string());
+        if let Ok(cc) = cc {
+            TestResult::from_bool(c == cc)
+        } else {
+            TestResult::failed()
+        }
+    }
+
+    #[test]
+    fn test_direct_frame() {
+        let f = Frame::FrameDirectedMessage {
+            from: None,
+            to: Some(Compound::from_str("J1Y").expect("valid callsign")),
+            cmd: Some(Command::Ack),
+        };
+        assert_eq!("J1Y ACK", f.to_string());
+        assert_eq!(
+            f,
+            Frame::from_str(&"J1Y ACK").expect("J1Y ACK is a valid message")
+        );
+
+        assert_eq!(
+            Frame::FrameDirectedMessage {
+                from: None,
+                to: Some(Compound::from_str("J1Y").expect("valid callsign")),
+                cmd: Some(Command::SnrQuestion),
+            },
+            Frame::from_str(&"J1Y?").expect("J1Y? is a valid message")
+        );
+
+        assert_eq!(
+            Frame::FrameDirectedMessage {
+                from: None,
+                to: Some(Compound::Callsign {
+                    base: "J1Y".to_string(),
+                    is_portable: true
+                }),
+                cmd: None,
+            },
+            Frame::from_str(&"J1Y/P").expect("J1Y! HELLO WORLD is a valid message")
+        );
+
+        assert_eq!(
+            "J1Y/P NO",
+            Frame::FrameDirectedMessage {
+                from: None,
+                to: Some(Compound::Callsign {
+                    base: "J1Y".to_string(),
+                    is_portable: true
+                }),
+                cmd: Some(Command::No),
+            }
+            .to_string(),
+        );
+
+        let f = Frame::FrameDirectedMessage {
+            from: None,
+            to: Some(Compound::Callsign {
+                base: "A4XP".to_string(),
+                is_portable: true,
+            }),
+            cmd: Some(Command::Msg),
+        };
+        assert_eq!("A4XP/P MSG", f.to_string());
+        assert_eq!(f, Frame::from_str(&f.to_string()).unwrap());
+
+        let f = Frame::FrameDirectedMessage {
+            from: None,
+            to: Some(Compound::BaseGroup {
+                kind: crate::compound::BaseGroup::AllCall,
+            }),
+            cmd: None,
+        };
+        assert_eq!("@ALLCALL", f.to_string());
+        assert_eq!(f, Frame::from_str(&f.to_string()).unwrap());
+
+        let f = Frame::FrameDirectedMessage {
+            from: None,
+            to: Some(Compound::GroupCall {
+                name: "AAA".to_string(),
+            }),
+            cmd: Some(Command::Relay),
+        };
+        assert_eq!("@AAA>", f.to_string());
+
+        assert_eq!(
+            Frame::FrameDirectedMessage {
+                from: None,
+                to: Some(Compound::BaseGroup { kind: BaseGroup::SOTA }),
+                cmd: Some(Command::DitDit),
+            },
+            Frame::from_str(&"@SOTA DIT DIT").expect("@SOTA DIT DIT is a valid message")
+        );
+
+        assert_eq!(f, Frame::from_str(&f.to_string()).unwrap());
+
+        //
+        assert_eq!(
+            Frame::FrameDirectedMessage {
+                from: None,
+                to: Some(Compound::BaseGroup { kind: BaseGroup::AllCall }),
+                cmd: Some(Command::FreeText),
+            },
+            Frame::from_str(&"@ALLCALL HELLO NET PSE QSY 14300").expect("@ALLCALL HELLO NET PSE QSY 14300 is a valid message")
+        );
+
+        // assert_eq!(
+        //     Frame::FrameDirectedMessage {
+        //         from: None,
+        //         to: Some(Compound::from_str("J1Y").expect("valid callsign")),
+        //         cmd: Some(Command::FreeText),
+        //     },
+        //     Frame::from_str(&"J1Y! HELLO WORLD").expect("J1Y! HELLO WORLD is a valid message")
+        // );
+
+        // assert_eq!(
+        //     Frame::FrameDirectedMessage {
+        //         from: None,
+        //         to: Some(Compound::from_str("J1Y").expect("valid callsign")),
+        //         cmd: Some(Command::FreeText),
+        //     },
+        //     Frame::from_str(&"J1Y! HELLO WORLD").expect("J1Y! HELLO WORLD is a valid message")
+        // );
+    }
+
+    #[quickcheck]
+    fn reparse_frame(c: Frame) -> TestResult {
+        if !c.is_valid() {
+            return TestResult::discard();
+        }
+        let cc = Frame::from_str(&c.to_string());
         if let Ok(cc) = cc {
             TestResult::from_bool(c == cc)
         } else {
