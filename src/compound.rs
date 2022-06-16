@@ -123,6 +123,19 @@ pub enum Compound {
     BaseGroup { kind: BaseGroup },
 }
 
+impl Compound {
+    pub fn normalize(self) -> Compound { 
+        if let Compound::GroupCall { ref name } = self {
+            for a_basegroup in BaseGroup::iter() {
+                if name.trim().eq_ignore_ascii_case(&a_basegroup.to_string().trim()[1..]) {
+                    return Compound::BaseGroup { kind: a_basegroup };
+                }
+            }
+        }
+        self
+    }
+}
+
 impl fmt::Display for Compound {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match &*self {
@@ -178,13 +191,9 @@ impl Arbitrary for Compound {
                     let valid_characters = &valid_characters[..];
                     let s_size = u8::arbitrary(g) % 8;
                     let name: String = (0..s_size).map(|_| g.choose(valid_characters).unwrap()).collect();
+                    let c = Compound::GroupCall{name};
                     // A groupcall must not be basegroup
-                    for a_basegroup in BaseGroup::iter() {
-                        if name == a_basegroup.to_string() {
-                            return Compound::BaseGroup { kind: a_basegroup };
-                        }
-                    }
-                    Compound::GroupCall{name}
+                    c.normalize()
             },
             1 => {
                 // [a-zA-Z0-9]{1,3}[0-9][a-zA-Z0-9]{0,3}[a-zA-Z]
@@ -271,7 +280,7 @@ mod tests {
     extern crate quickcheck;
 
     use std::str::FromStr;
-
+    use strum::IntoEnumIterator;
     use crate::compound::{BaseGroup, Compound};
     use quickcheck::TestResult;
 
@@ -298,6 +307,27 @@ mod tests {
         assert_eq!(
             group0,
             Compound::from_str(&"@GROUP/0").expect("can read group 0")
+        );
+    }
+
+    #[test]
+    fn test_compound_normalization() {
+        for a_basegroup in BaseGroup::iter() {
+            assert_eq!(
+                Compound::BaseGroup { kind: a_basegroup },
+                Compound::GroupCall { name: a_basegroup.to_string()[1..].to_string() }.normalize()
+            )
+        }
+        assert_eq!("@HB", BaseGroup::HB.to_string() );
+        assert_eq!("@HB", Compound::BaseGroup { kind: BaseGroup::HB}.to_string() );
+        assert_eq!("@HB", Compound::GroupCall { name: "HB".to_string() }.to_string() );
+        assert_eq!(
+            Compound::BaseGroup { kind: BaseGroup::HB },
+            Compound::GroupCall { name: "HB".to_string() }.normalize()
+        );
+        assert_eq!(
+            Compound::BaseGroup { kind: BaseGroup::HB },
+            Compound::from_str("@HB").expect("HB is valid group").normalize()
         );
     }
 
