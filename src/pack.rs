@@ -1,8 +1,11 @@
+use std::str::FromStr;
+
 use crate::compound::{BaseGroup, Compound};
 use crate::js8frame::Frame;
 use bitvec::prelude::*;
 use crc_all::Crc;
 use regex::Regex;
+use strum::IntoEnumIterator;
 
 pub const NBASE: u32 = 37 * 36 * 10 * 27 * 27 * 27;
 const NTOKENS: u32 = 2063592u32;
@@ -99,7 +102,7 @@ pub fn pack28(callsign: &str) -> Option<u32> {
     return Some(NTOKENS + MAX22 + n28);
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub struct Js8PackedCompound(BitArr!(for 28, in u32, Msb0));
 
 impl From<Js8PackedCompound> for u32 {
@@ -126,16 +129,22 @@ impl JS8Protocol {
     /// See pack_callsign_str
     fn denormalize(callsign: Compound) -> Compound {
         let callsign = callsign.normalize();
-        if let Compound::Callsign { ref base, is_portable: p } = callsign {
+        if let Compound::Callsign {
+            ref base,
+            is_portable: p,
+        } = callsign
+        {
             let mut callsign = base.to_string();
             if callsign.len() < 6 {
                 callsign = callsign + "      ";
             }
-            
+
             if callsign.starts_with("3DA0") {
                 // workaround for swaziland
                 callsign = "3D0".to_string() + &callsign[4..];
-            } else if callsign.starts_with("3X") && callsign.chars().nth(2).unwrap().is_ascii_alphabetic() {
+            } else if callsign.starts_with("3X")
+                && callsign.chars().nth(2).unwrap().is_ascii_alphabetic()
+            {
                 // workaround for guinea
                 callsign = "Q".to_string() + &callsign[2..];
             }
@@ -145,7 +154,10 @@ impl JS8Protocol {
             let callsign = callsign[..6].to_string();
             assert!(callsign.len() == 6);
             assert!(callsign.chars().nth(2).unwrap().is_ascii_digit());
-            return Compound::Callsign { base: callsign, is_portable: p };
+            return Compound::Callsign {
+                base: callsign,
+                is_portable: p,
+            };
         }
         callsign
     }
@@ -185,9 +197,47 @@ impl JS8Protocol {
             is_portable: _,
         } = callsign
         {
-            return JS8Protocol::pack_callsign_str(&callsign)
+            return JS8Protocol::pack_callsign_str(&callsign);
         }
         None
+    }
+
+    pub fn unpack_callsign(callsign: Js8PackedCompound) -> Option<Compound> {
+        let n28 = u32::from(callsign);
+        if JS8Protocol::NBASECALL < n28 && n28 <= JS8Protocol::NBASECALL + BaseGroup::iter().len() as u32 {
+            let callsign = BaseGroup::iter().nth((n28 - JS8Protocol::NBASECALL - 1) as usize)?;
+            return Some(Compound::BaseGroup { kind: callsign });
+        }
+        let value = n28;
+        let mut word = [' '; 6];
+
+        let tmp = value % 27 + 10;
+        word[5] = JS8Protocol::ALPHANUMERIC.chars().nth(tmp as usize)?;
+        let value = value / 27;
+
+        let tmp = value % 27 + 10;
+        word[4] = JS8Protocol::ALPHANUMERIC.chars().nth(tmp as usize)?;
+        let value = value / 27;
+
+        let tmp = value % 27 + 10;
+        word[3] = JS8Protocol::ALPHANUMERIC.chars().nth(tmp as usize)?;
+        let value = value / 27;
+
+        let tmp = value % 10;
+        word[2] = JS8Protocol::ALPHANUMERIC.chars().nth(tmp as usize)?;
+        let value = value / 10;
+
+        let tmp = value % 36;
+        word[1] = JS8Protocol::ALPHANUMERIC.chars().nth(tmp as usize)?;
+        let value = value / 36;
+
+        let tmp = value;
+        word[0] = JS8Protocol::ALPHANUMERIC.chars().nth(tmp as usize)?;
+
+        let word: String = word.iter().collect();
+        let word = word.trim();
+        // TODO js8 renormalize()
+        Some(Compound::from_str(&word).ok()?.normalize())
     }
 }
 
@@ -681,6 +731,7 @@ mod tests {
     use crate::pack::{crc12, pack28, pack75, pack87, pack_grid_or_report};
     use crate::pack::{NBASE, NGBASE};
     use quickcheck::TestResult;
+    use regex::Regex;
 
     #[test]
     fn it_works() {
@@ -741,7 +792,7 @@ mod tests {
     }
 
     #[quickcheck]
-    fn pack28_cq_freq(freq: u16) -> TestResult {
+    fn qc_pack28_cq_freq(freq: u16) -> TestResult {
         if freq > 999 {
             return TestResult::discard();
         }
@@ -780,7 +831,7 @@ mod tests {
     }
 
     #[quickcheck]
-    fn packgrid_R_qc(n: u8) -> TestResult {
+    fn qc_packgrid_R_qc(n: u8) -> TestResult {
         if n < 1 || n > 30 {
             return TestResult::discard();
         }
@@ -789,7 +840,7 @@ mod tests {
     }
 
     #[quickcheck]
-    fn packgrid_signal_report_qc(n: u8) -> TestResult {
+    fn qc_packgrid_signal_report_qc(n: u8) -> TestResult {
         if n < 1 || n > 30 {
             return TestResult::discard();
         }
@@ -852,27 +903,29 @@ mod tests {
 
     #[test]
     fn pack_callsign_known() {
+        let ll3ajg_packed = Some(Js8PackedCompound::from(152996208u32));
         assert_eq!(
             JS8Protocol::pack_callsign(Compound::Callsign {
                 base: "LL3AJG".into(),
                 is_portable: false
             }),
-            Some(Js8PackedCompound::from(152996208u32))
+            ll3ajg_packed
         );
         let v = JS8Protocol::pack_callsign(Compound::Callsign {
             base: "L0ABC".into(),
-            is_portable: false
+            is_portable: false,
         });
-        assert_eq!(
-            u32::from(v.unwrap()),
-            259225139u32
-        );
+        assert_eq!(u32::from(v.unwrap()), 259225139u32);
         assert_eq!(
             JS8Protocol::pack_callsign(Compound::Callsign {
                 base: "LL3JG".into(),
                 is_portable: false
             }),
             Some(Js8PackedCompound::from(153002708u32))
+        );
+        assert_eq!(
+            Compound::from_str("LL3AJG").ok(),
+            JS8Protocol::unpack_callsign(ll3ajg_packed.unwrap())
         );
     }
 
@@ -886,17 +939,22 @@ mod tests {
             BaseGroup::DX_SA,
         ];
         for (i, k) in js8_in_order_kinds.iter().enumerate() {
+            let callsign = Compound::BaseGroup { kind: *k };
             assert_eq!(
-                JS8Protocol::pack_callsign(Compound::BaseGroup { kind: *k }),
+                JS8Protocol::pack_callsign(callsign.clone()),
                 Some(Js8PackedCompound::from(
                     JS8Protocol::NBASECALL + 1 + (i as u32)
                 ))
+            );
+            assert_eq!(
+                Some(callsign),
+                JS8Protocol::unpack_callsign(Js8PackedCompound::from(JS8Protocol::NBASECALL + 1 + (i as u32)))
             );
         }
     }
 
     #[quickcheck]
-    fn pack_swaziland_callsign(c1: char, c2: char, c3: char) -> TestResult {
+    fn qc_pack_swaziland_callsign(c1: char, c2: char, c3: char) -> TestResult {
         if !c1.is_alphabetic() || !c2.is_alphabetic() || !c3.is_alphabetic() {
             return TestResult::discard();
         }
@@ -907,12 +965,12 @@ mod tests {
         let same_as = format!("3D0{}{}{}", c1, c2, c3);
         let callsign = Compound::Callsign {
             base: callsign,
-            is_portable: false
+            is_portable: false,
         };
         let actual = JS8Protocol::pack_callsign(callsign);
         let same_as = Compound::Callsign {
-                base: same_as,
-                is_portable: false
+            base: same_as,
+            is_portable: false,
         };
         let expected = JS8Protocol::pack_callsign(same_as);
         TestResult::from_bool(expected == actual)
@@ -923,6 +981,39 @@ mod tests {
         assert_eq!(
             JS8Protocol::pack_callsign(Compound::from_str("3XA0XYZ").unwrap()),
             JS8Protocol::pack_callsign(Compound::from_str("QA0XYZ").unwrap())
+        );
+    }
+
+    #[quickcheck]
+    fn qc_pack_unpack_callsig(c1: char, c2: char, c3: char, c4: char, c5: char, c6: char) -> TestResult {
+        let callsign: String = [c1, c2, c3, c4, c5, c6].iter().collect();
+        let regex = Regex::new(r"(([0-9A-Z ])([0-9A-Z])([0-9])([A-Z ])([A-Z ])([A-Z ]))").unwrap();
+        if !regex.is_match(&callsign) {
+            return TestResult::discard();
+        }
+        let callsign = Compound::from_str(callsign.trim()).unwrap();
+        let packed_callsign = JS8Protocol::pack_callsign(callsign.clone()).unwrap();
+        let unpacked_packed_callsign = JS8Protocol::unpack_callsign(packed_callsign).unwrap();
+        if callsign != unpacked_packed_callsign {
+            return TestResult::failed();
+        }
+        TestResult::passed()
+    }
+
+    #[quickcheck]
+    fn qc_unpack_pack_callsign(n28: u32) {
+        let packed_callsign = Js8PackedCompound::from(n28);
+        let unpacked_callsign = JS8Protocol::unpack_callsign(packed_callsign);
+        if unpacked_callsign == None {
+            return
+        }
+        let packed_unpacked_callsign = JS8Protocol::pack_callsign(unpacked_callsign.unwrap());
+        if packed_unpacked_callsign == None {
+            return
+        }
+        assert_eq!(
+            Some(packed_callsign),
+            packed_unpacked_callsign
         );
     }
 }
