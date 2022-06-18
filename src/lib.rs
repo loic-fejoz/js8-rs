@@ -8,6 +8,6 @@ extern crate lazy_static;
 extern crate quickcheck_macros;
 
 
-//pub mod pack;
+pub mod pack;
 pub mod js8frame;
 pub mod compound;

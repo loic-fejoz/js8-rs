@@ -7,7 +7,7 @@ use strum_macros::{EnumIter, FromRepr};
 #[cfg(test)]
 use quickcheck::{empty_shrinker, single_shrinker, Arbitrary, Gen};
 
-use crate::{compound::Compound, js8frame};
+use crate::compound::Compound;
 
 // submode types
 #[derive(PartialEq, Eq, Debug)]

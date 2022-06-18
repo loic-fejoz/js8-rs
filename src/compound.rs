@@ -9,7 +9,7 @@ use quickcheck::{empty_shrinker, single_shrinker, Arbitrary, Gen};
 #[repr(u32)]
 #[allow(non_camel_case_types)]
 pub enum BaseGroup {
-    Incomplete = 37 * 36 * 10 * 27 * 27 * 27,
+    Incomplete = 37 * 36 * 10 * 27 * 27 * 27 + 1,
     AllCall,
     JS8Net,
 
