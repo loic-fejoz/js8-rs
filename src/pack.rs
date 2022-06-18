@@ -118,6 +118,9 @@ impl From<u32> for Js8PackedCompound {
     }
 }
 
+#[derive(Eq, PartialEq, Clone)]
+pub struct DenormalizedCompound(Compound);
+
 pub struct JS8Protocol {}
 
 impl JS8Protocol {
@@ -127,7 +130,7 @@ impl JS8Protocol {
     /// Trick and adapt for some country
     /// Make sure it is at least 6 letters long including spaces if not long enough
     /// See pack_callsign_str
-    fn denormalize(callsign: Compound) -> Compound {
+    fn denormalize(callsign: Compound) -> DenormalizedCompound {
         let callsign = callsign.normalize();
         if let Compound::Callsign {
             ref base,
@@ -152,19 +155,19 @@ impl JS8Protocol {
             }
             let callsign = callsign[..6].to_string();
             assert!(callsign.len() == 6);
-            assert!(callsign.chars().nth(2).unwrap().is_ascii_digit());
-            return Compound::Callsign {
+            //assert_eq!(callsign.chars().nth(2).unwrap().is_ascii_digit());
+            return DenormalizedCompound(Compound::Callsign {
                 base: callsign,
                 is_portable: p,
-            };
+            });
         }
-        callsign
+        DenormalizedCompound(callsign)
     }
 
     /// Trick and adapt for some country
     /// Make sure it is at least 6 letters long including spaces if not long enough
     /// See pack_callsign_str
-    fn normalize(callsign: Compound) -> Compound {
+    fn normalize(DenormalizedCompound(callsign): DenormalizedCompound) -> Compound {
         let callsign = callsign.normalize();
         if let Compound::Callsign {
             ref base,
@@ -212,13 +215,13 @@ impl JS8Protocol {
     /// Pack a valid callsign into a 28-bits integer
     pub fn pack_callsign(callsign: Compound) -> Option<Js8PackedCompound> {
         let callsign = JS8Protocol::denormalize(callsign);
-        if let Compound::BaseGroup { kind } = callsign {
+        if let DenormalizedCompound(Compound::BaseGroup { kind }) = callsign {
             return Some(Js8PackedCompound::from(kind as u32));
         }
-        if let Compound::Callsign {
+        if let DenormalizedCompound(Compound::Callsign {
             base: callsign,
             is_portable: _,
-        } = callsign
+        }) = callsign
         {
             return JS8Protocol::pack_callsign_str(&callsign);
         }
@@ -260,7 +263,7 @@ impl JS8Protocol {
         let word: String = word.iter().collect();
         let word = word.trim();
         // TODO js8 renormalize()
-        Some(JS8Protocol::normalize(Compound::from_str(&word).ok()?))
+        Some(JS8Protocol::normalize(DenormalizedCompound(Compound::from_str(&word).ok()?)))
     }
 }
 
@@ -1072,4 +1075,14 @@ mod tests {
 //             u32::from(packed_unpacked_callsign)
 //         );
 //     }
+
+    // #[quickcheck]
+    // fn qc_unpack_pack_compound(callsign: Compound) {
+    //     let n28 = JS8Protocol::pack_callsign(callsign.clone()).unwrap();
+    //     let p = JS8Protocol::unpack_callsign(n28).unwrap();
+    //     assert_eq!(
+    //         callsign,
+    //         p
+    //     );
+    // }
 }

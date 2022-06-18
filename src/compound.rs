@@ -126,10 +126,19 @@ pub enum Compound {
 impl Compound {
     pub fn normalize(self) -> Compound { 
         if let Compound::GroupCall { ref name } = self {
+            if name.trim().is_empty() {
+                return Compound::BaseGroup { kind: BaseGroup::Incomplete };
+            }
             for a_basegroup in BaseGroup::iter() {
                 if name.trim().eq_ignore_ascii_case(&a_basegroup.to_string().trim()[1..]) {
                     return Compound::BaseGroup { kind: a_basegroup };
                 }
+            }
+        }
+        if let Compound::Callsign { ref base, is_portable } = self {
+            let base = base.trim();
+            if !base.starts_with("3DA0") && base.len() > 6 {
+                return Compound::Callsign {base: base[..7].to_string(), is_portable};
             }
         }
         self
@@ -189,10 +198,10 @@ impl Arbitrary for Compound {
                     let mut valid_characters: Vec<char> = ('A'..'Z').chain('0'..'9').collect();
                     valid_characters.push('/');
                     let valid_characters = &valid_characters[..];
-                    let s_size = u8::arbitrary(g) % 8;
+                    let s_size = 1+(u8::arbitrary(g) % 7);
                     let name: String = (0..s_size).map(|_| g.choose(valid_characters).unwrap()).collect();
                     let c = Compound::GroupCall{name};
-                    // A groupcall must not be basegroup
+                    // A groupcall must not be basegroup nor empty
                     c.normalize()
             },
             1 => {
@@ -228,7 +237,7 @@ impl Arbitrary for Compound {
                 Compound::Callsign {
                     base,
                     is_portable: bool::arbitrary(g),
-                }
+                }.normalize()
             },
             _ => Compound::BaseGroup {
                 kind: BaseGroup::arbitrary(g),
