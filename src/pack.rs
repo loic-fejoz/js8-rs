@@ -135,10 +135,9 @@ impl JS8Protocol {
         } = callsign
         {
             let mut callsign = base.to_string();
-            if callsign.len() < 6 {
-                callsign = callsign + "      ";
+            if callsign.len() < 8 {
+                callsign = callsign + "        ";
             }
-
             if callsign.starts_with("3DA0") {
                 // workaround for swaziland
                 callsign = "3D0".to_string() + &callsign[4..];
@@ -158,6 +157,30 @@ impl JS8Protocol {
                 base: callsign,
                 is_portable: p,
             };
+        }
+        callsign
+    }
+
+    /// Trick and adapt for some country
+    /// Make sure it is at least 6 letters long including spaces if not long enough
+    /// See pack_callsign_str
+    fn normalize(callsign: Compound) -> Compound {
+        let callsign = callsign.normalize();
+        if let Compound::Callsign {
+            ref base,
+            is_portable: p,
+        } = callsign
+        {
+            let callsign = base;
+            if callsign.starts_with("3DA0") {
+                // workaround for swaziland
+                let callsign = "3DA0".to_string() + &callsign[4..];
+                return Compound::Callsign { base: callsign, is_portable: p };
+            } else if callsign.starts_with("Q") {
+                // workaround for sguineawaziland
+                let callsign = "3X".to_string() + &callsign[1..];
+                return Compound::Callsign { base: callsign, is_portable: p };
+            }
         }
         callsign
     }
@@ -237,7 +260,7 @@ impl JS8Protocol {
         let word: String = word.iter().collect();
         let word = word.trim();
         // TODO js8 renormalize()
-        Some(Compound::from_str(&word).ok()?.normalize())
+        Some(JS8Protocol::normalize(Compound::from_str(&word).ok()?))
     }
 }
 
@@ -831,7 +854,7 @@ mod tests {
     }
 
     #[quickcheck]
-    fn qc_packgrid_R_qc(n: u8) -> TestResult {
+    fn qc_packgrid_r_qc(n: u8) -> TestResult {
         if n < 1 || n > 30 {
             return TestResult::discard();
         }
@@ -978,9 +1001,17 @@ mod tests {
 
     #[test]
     fn pack_guinea_callsign() {
+        let callsign = Compound::from_str("3XA0XYZ").unwrap();
+        let packed_callsign = JS8Protocol::pack_callsign(callsign.clone());
+        let denormalized_callsign = Compound::from_str("QA0XYZ").unwrap();
+        let packed_denormalized_callsign = JS8Protocol::pack_callsign(denormalized_callsign);
         assert_eq!(
-            JS8Protocol::pack_callsign(Compound::from_str("3XA0XYZ").unwrap()),
-            JS8Protocol::pack_callsign(Compound::from_str("QA0XYZ").unwrap())
+            packed_callsign,
+            packed_denormalized_callsign
+        );
+        assert_eq!(
+            Some(callsign),
+            JS8Protocol::unpack_callsign(packed_denormalized_callsign.unwrap())
         );
     }
 
@@ -1002,18 +1033,43 @@ mod tests {
 
     #[quickcheck]
     fn qc_unpack_pack_callsign(n28: u32) {
-        let packed_callsign = Js8PackedCompound::from(n28);
-        let unpacked_callsign = JS8Protocol::unpack_callsign(packed_callsign);
+        let n28 = Js8PackedCompound::from(n28);
+        let unpacked_callsign = JS8Protocol::unpack_callsign(n28);
         if unpacked_callsign == None {
             return
         }
-        let packed_unpacked_callsign = JS8Protocol::pack_callsign(unpacked_callsign.unwrap());
+        let unpacked_callsign = unpacked_callsign.unwrap();
+        if let Compound::Callsign {ref base, is_portable: _ } = unpacked_callsign {
+            let regex = Regex::new(r"(([0-9A-Z ])([0-9A-Z])([0-9])([A-Z ])([A-Z ])([A-Z ]))").unwrap();
+            if !regex.is_match(base) {
+                return;
+            }
+        }
+        let packed_unpacked_callsign = JS8Protocol::pack_callsign(unpacked_callsign);
         if packed_unpacked_callsign == None {
             return
         }
         assert_eq!(
-            Some(packed_callsign),
+            Some(n28),
             packed_unpacked_callsign
         );
     }
+
+//     #[test]
+//     fn unpack_pack_callsign() {
+//         let n28 = 0b00001111100001000010011010010111u32;
+//         let n28 = Js8PackedCompound::from(n28);
+//         let unpacked_callsign = JS8Protocol::unpack_callsign(n28).unwrap();
+//         if let Compound::Callsign {ref base, is_portable: _ } = unpacked_callsign {
+//             let regex = Regex::new(r"(([0-9A-Z ])([0-9A-Z])([0-9])([A-Z ])([A-Z ])([A-Z ]))").unwrap();
+//             if !regex.is_match(base) {
+//                 return;
+//             }
+//         }
+//         let packed_unpacked_callsign = JS8Protocol::pack_callsign(unpacked_callsign).unwrap();
+//         assert_eq!(
+//             u32::from(n28),
+//             u32::from(packed_unpacked_callsign)
+//         );
+//     }
 }
