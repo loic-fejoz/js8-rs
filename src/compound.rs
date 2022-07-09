@@ -143,6 +143,13 @@ impl Compound {
         }
         self
     }
+
+    pub fn is_portable(&self) -> bool {
+        match self {
+            Self::Callsign { base: _, is_portable } => *is_portable,
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for Compound {
@@ -224,7 +231,9 @@ impl Arbitrary for Compound {
                     base.push(c);
                 }
                 base.push(*g.choose(digits).expect(""));
-                let nc = 1+*g.choose(&[0, 1 as usize,2,3]).expect("");
+
+                let rnd = u8::arbitrary(g);
+                let nc = 1 + rnd % ((6-base.len()) as u8);
                 for _ in 0..nc {
 
                     let c = *g.choose(a_zA_Z0_9).expect("");
@@ -277,7 +286,7 @@ impl Arbitrary for Compound {
             Self::BaseGroup { kind } => {
                 Box::new(kind.shrink().map(|n| Compound::BaseGroup { kind: n }))
             }
-            _ => empty_shrinker(),
+            //_ => empty_shrinker(),
         }
     }
 }

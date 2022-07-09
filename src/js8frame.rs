@@ -1,6 +1,6 @@
 use lazy_static::lazy_static;
 use regex::Regex;
-use std::fmt;
+use std::{fmt, num::ParseIntError};
 use strum::IntoEnumIterator;
 use strum_macros::{EnumIter, FromRepr};
 
@@ -171,15 +171,28 @@ impl Arbitrary for Command {
     }
 }
 
-#[derive(PartialEq, Eq, Debug, FromRepr)]
-#[repr(u8)]
-pub enum FrameType {
-    FrameHeartbeatOrCQ = 0b000,
-    FrameCoumpound = 0b001,
-    FrameCoumpoundDirected = 0b010,
-    FrameDirected = 0b011,
-    FrameData = 0b100,           // actually 0b10x
-    FrameDataCompressed = 0b110, // actually 0b11x
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct SnrReport(pub i8);
+
+impl SnrReport {
+    fn new(value: i8) -> SnrReport {
+        SnrReport(-30.max(value).min(31))
+    }
+}
+
+impl std::str::FromStr for SnrReport {
+    type Err = ParseIntError;
+
+    fn from_str(s: &str) -> ::core::result::Result<Self, Self::Err> {
+        let v= s.trim().parse::<i8>();
+        Ok(SnrReport::new(v?))
+    }
+}
+
+impl fmt::Display for SnrReport {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
 #[derive(PartialEq, Debug, Clone, Hash, Eq)]
@@ -190,6 +203,7 @@ pub enum Frame {
         from: Option<Compound>,
         to: Option<Compound>,
         cmd: Option<Command>,
+        num: Option<SnrReport>,
     },
 }
 
@@ -200,11 +214,13 @@ impl Frame {
                 from: _,
                 to: None,
                 cmd: _,
+                num: _,
             } => false,
             Frame::FrameDirectedMessage {
                 from: _,
                 to: Some(Compound::GroupCall { name }),
                 cmd: _,
+                num: _,
             } => !name.is_empty(),
             _ => true,
         }
@@ -214,21 +230,25 @@ impl Frame {
 impl fmt::Display for Frame {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Frame::FrameDirectedMessage { from, to, cmd } => {
+            Frame::FrameDirectedMessage { from, to, cmd, num } => {
                 let mut s: Vec<String> = Vec::new();
-                let mut has_from = false;
                 if let Some(from) = from {
-                    has_from = true;
                     s.push(format!("{}:", from));
                 }
                 if let Some(to) = to {
-                    if has_from {
+                    if !s.is_empty() {
                         s.push(" ".to_string());
                     }
                     s.push(format!("{}", to));
                 }
                 if let Some(cmd) = cmd {
                     s.push(cmd.to_string());
+                }
+                if let Some(num) = num {
+                    if !s.is_empty() {
+                        s.push(" ".to_string());
+                    }
+                    s.push(num.to_string());
                 }
                 let s = s.join("");
                 write!(f, "{}", s)
@@ -242,26 +262,27 @@ impl std::str::FromStr for Frame {
     type Err = ::strum::ParseError;
 
     fn from_str(s: &str) -> ::core::result::Result<Self, Self::Err> {
-        static callsign_pattern: &str = "(?P<callsign>[@]?[A-Z0-9/]+)";
-        static optional_cmd_pattern: &str = "(?P<cmd>\\s?(?:AGN[?]|QSL[?]|HW CPY[?]|MSG TO[:]|SNR[?]|INFO[?]|GRID[?]|STATUS[?]|QUERY MSGS[?]|HEARING[?]|(?:(?:STATUS|HEARING|QUERY CALL|QUERY MSGS|QUERY|CMD|MSG|NACK|ACK|73|YES|NO|HEARTBEAT SNR|SNR|QSL|RR|SK|FB|INFO|GRID|DIT DIT))|[?> ]))?";
-        static optional_num_pattern: &str = "(?P<num>\\s?[-+]?(?:3[01]|[0-2]?[0-9]))?";
+        static CALLSIGN_PATTERN: &str = "(?P<callsign>[@]?[A-Z0-9/]+)";
+        static OPTIONAL_CMD_PATTERN: &str = "(?P<cmd>\\s?(?:AGN[?]|QSL[?]|HW CPY[?]|MSG TO[:]|SNR[?]|INFO[?]|GRID[?]|STATUS[?]|QUERY MSGS[?]|HEARING[?]|(?:(?:STATUS|HEARING|QUERY CALL|QUERY MSGS|QUERY|CMD|MSG|NACK|ACK|73|YES|NO|HEARTBEAT SNR|SNR|QSL|RR|SK|FB|INFO|GRID|DIT DIT))|[?> ]))?";
+        static OPTIONAL_NUM_PATTERN: &str = "(?P<num>\\s?[-+]?(?:3[01]|[0-2]?[0-9]))?";
 
         lazy_static! {
-            static ref directed_frame_pattern: String =
-                "^".to_owned() + callsign_pattern + optional_cmd_pattern + optional_num_pattern;
-            static ref directed_re: Regex = Regex::new(&directed_frame_pattern).unwrap();
-            static ref callsign_re: Regex = Regex::new(callsign_pattern).unwrap();
-            static ref optional_cmd_re: Regex = Regex::new(optional_cmd_pattern).unwrap();
-            static ref optional_num_re: Regex = Regex::new(optional_num_pattern).unwrap();
-            static ref optional_grid_re: Regex =
+            static ref DIRECTED_FRAME_PATTERN: String =
+                "^".to_owned() + CALLSIGN_PATTERN + OPTIONAL_CMD_PATTERN + OPTIONAL_NUM_PATTERN;
+            static ref DIRECTED_RE: Regex = Regex::new(&DIRECTED_FRAME_PATTERN).unwrap();
+            static ref CALLSIGN_RE: Regex = Regex::new(CALLSIGN_PATTERN).unwrap();
+            static ref OPTIONAL_CMD_RE: Regex = Regex::new(OPTIONAL_CMD_PATTERN).unwrap();
+            static ref OPTIONAL_NUM_RE: Regex = Regex::new(OPTIONAL_NUM_PATTERN).unwrap();
+            static ref OPTIONAL_GRID_RE: Regex =
                 Regex::new("(?<grid>\\s?[A-R]{2}[0-9]{2})?").unwrap();
-            static ref optional_extended_grid_re: Regex =
+            static ref OPTIONAL_EXTENDED_GRID_RE: Regex =
                 Regex::new("^(?<grid>\\s?(?:[A-R]{2}[0-9]{2}(?:[A-X]{2}(?:[0-9]{2})?)*))?")
                     .unwrap();
         }
-        if let Some(x) = directed_re.captures(s) {
+        if let Some(x) = DIRECTED_RE.captures(s) {
             let mut the_cmd: Option<Command> = None;
             let mut the_callsign: Option<Compound> = None;
+            let mut the_num: Option<SnrReport> = None;
             if let Some(callsign) = x.name("callsign") {
                 let callsign = callsign.as_str();
                 if let Ok(callsign) = Compound::from_str(callsign) {
@@ -274,10 +295,17 @@ impl std::str::FromStr for Frame {
                     the_cmd = Some(cmd);
                 }
             }
+            if let Some(num) = x.name("num") {
+                let num = num.as_str();
+                if let Ok(num) = SnrReport::from_str(num) {
+                    the_num = Some(num);
+                }
+            }
             let a_frame = Frame::FrameDirectedMessage {
                 from: None,
                 to: the_callsign,
                 cmd: the_cmd,
+                num: the_num
             };
             return Ok(a_frame);
         }
@@ -296,10 +324,17 @@ impl Arbitrary for Frame {
         if bool::arbitrary(g) {
             the_cmd = Some(Command::arbitrary(g));
         }
+        let mut the_num = None;
+        if let Some(the_cmd) = the_cmd {
+            if the_cmd.may_include_snr() && bool::arbitrary(g) {
+                the_num = Some(SnrReport::new(i8::arbitrary(g) % 31));
+            }
+        }
         Frame::FrameDirectedMessage {
             from: None,
             to: the_callsign,
             cmd: the_cmd,
+            num: the_num,
         }
     }
 }
@@ -329,8 +364,8 @@ mod tests {
     use std::str::FromStr;
 
     use crate::{
-        compound::{Compound, BaseGroup},
-        js8frame::{Command, Frame},
+        compound::{BaseGroup, Compound},
+        js8frame::{Command, Frame, SnrReport},
     };
     use quickcheck::TestResult;
 
@@ -378,7 +413,7 @@ mod tests {
     }
 
     #[quickcheck]
-    fn reparse_command(c: Command) -> TestResult {
+    fn qc_reparse_command(c: Command) -> TestResult {
         let cc = Command::from_str(&c.to_string());
         if let Ok(cc) = cc {
             TestResult::from_bool(c == cc)
@@ -393,6 +428,7 @@ mod tests {
             from: None,
             to: Some(Compound::from_str("J1Y").expect("valid callsign")),
             cmd: Some(Command::Ack),
+            num: None
         };
         assert_eq!("J1Y ACK", f.to_string());
         assert_eq!(
@@ -405,6 +441,7 @@ mod tests {
                 from: None,
                 to: Some(Compound::from_str("J1Y").expect("valid callsign")),
                 cmd: Some(Command::SnrQuestion),
+                num: None
             },
             Frame::from_str(&"J1Y?").expect("J1Y? is a valid message")
         );
@@ -417,6 +454,7 @@ mod tests {
                     is_portable: true
                 }),
                 cmd: None,
+                num: None
             },
             Frame::from_str(&"J1Y/P").expect("J1Y! HELLO WORLD is a valid message")
         );
@@ -430,6 +468,7 @@ mod tests {
                     is_portable: true
                 }),
                 cmd: Some(Command::No),
+                num: None
             }
             .to_string(),
         );
@@ -441,6 +480,7 @@ mod tests {
                 is_portable: true,
             }),
             cmd: Some(Command::Msg),
+            num: None
         };
         assert_eq!("A4XP/P MSG", f.to_string());
         assert_eq!(f, Frame::from_str(&f.to_string()).unwrap());
@@ -451,6 +491,7 @@ mod tests {
                 kind: crate::compound::BaseGroup::AllCall,
             }),
             cmd: None,
+            num: None
         };
         assert_eq!("@ALLCALL", f.to_string());
         assert_eq!(f, Frame::from_str(&f.to_string()).unwrap());
@@ -461,14 +502,18 @@ mod tests {
                 name: "AAA".to_string(),
             }),
             cmd: Some(Command::Relay),
+            num: None
         };
         assert_eq!("@AAA>", f.to_string());
 
         assert_eq!(
             Frame::FrameDirectedMessage {
                 from: None,
-                to: Some(Compound::BaseGroup { kind: BaseGroup::SOTA }),
+                to: Some(Compound::BaseGroup {
+                    kind: BaseGroup::SOTA
+                }),
                 cmd: Some(Command::DitDit),
+                num: None
             },
             Frame::from_str(&"@SOTA DIT DIT").expect("@SOTA DIT DIT is a valid message")
         );
@@ -479,10 +524,14 @@ mod tests {
         assert_eq!(
             Frame::FrameDirectedMessage {
                 from: None,
-                to: Some(Compound::BaseGroup { kind: BaseGroup::AllCall }),
+                to: Some(Compound::BaseGroup {
+                    kind: BaseGroup::AllCall
+                }),
                 cmd: Some(Command::FreeText),
+                num: None
             },
-            Frame::from_str(&"@ALLCALL HELLO NET PSE QSY 14300").expect("@ALLCALL HELLO NET PSE QSY 14300 is a valid message")
+            Frame::from_str(&"@ALLCALL HELLO NET PSE QSY 14300")
+                .expect("@ALLCALL HELLO NET PSE QSY 14300 is a valid message")
         );
 
         // assert_eq!(
@@ -499,17 +548,53 @@ mod tests {
         //         from: None,
         //         to: Some(Compound::from_str("J1Y").expect("valid callsign")),
         //         cmd: Some(Command::FreeText),
+        //         num: None
         //     },
         //     Frame::from_str(&"J1Y! HELLO WORLD").expect("J1Y! HELLO WORLD is a valid message")
         // );
+
+        assert_eq!(
+            Frame::FrameDirectedMessage {
+                from: None,
+                to: Some(Compound::from_str("@GROUP/3").expect("valid callsign")),
+                cmd: Some(Command::HearbeatSnr),
+                num: Some(SnrReport(-30)),
+            },
+            Frame::from_str(&"@GROUP/3 HEARTBEAT SNR -30")
+                .expect("@GROUP/3 HEARTBEAT SNR -30 is a valid message")
+        );
+
+        assert_eq!(
+            Frame::FrameDirectedMessage {
+                from: None,
+                to: Some(Compound::from_str("@NFY4L113").expect("valid callsign")),
+                cmd: Some(Command::HearbeatSnr),
+                num: Some(SnrReport(-30)),
+            },
+            Frame::from_str(&"@NFY4L113 HEARTBEAT SNR -31")
+                .expect("@NFY4L113 HEARTBEAT SNR -31 is a valid message except for SNR Value")
+        );
+
+        assert_eq!(
+            Frame::FrameDirectedMessage {
+                from: None,
+                to: Some(Compound::BaseGroup {
+                    kind: BaseGroup::EMCOMM
+                }),
+                cmd: Some(Command::HearbeatSnr),
+                num: Some(SnrReport(-10)),
+            }.to_string(),
+            "@EMCOMM HEARTBEAT SNR -10"
+        );
     }
 
     #[quickcheck]
-    fn reparse_frame(c: Frame) -> TestResult {
+    fn qc_reparse_frame(c: Frame) -> TestResult {
         if !c.is_valid() {
             return TestResult::discard();
         }
-        let cc = Frame::from_str(&c.to_string());
+        let frame_str = c.to_string();
+        let cc = Frame::from_str(&frame_str);
         if let Ok(cc) = cc {
             TestResult::from_bool(c == cc)
         } else {

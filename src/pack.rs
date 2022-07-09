@@ -1,11 +1,13 @@
 use std::str::FromStr;
 
 use crate::compound::{BaseGroup, Compound};
-use crate::js8frame::Frame;
+use crate::js8frame::{Frame, Command};
 use bitvec::prelude::*;
 use crc_all::Crc;
 use regex::Regex;
 use strum::IntoEnumIterator;
+use strum_macros::FromRepr;
+
 
 pub const NBASE: u32 = 37 * 36 * 10 * 27 * 27 * 27;
 const NTOKENS: u32 = 2063592u32;
@@ -103,7 +105,7 @@ pub fn pack28(callsign: &str) -> Option<u32> {
 }
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
-pub struct Js8PackedCompound(BitArr!(for 28, in u32, Msb0));
+pub struct Js8PackedCompound(BitArr!(for 28, in u32, Lsb0));
 
 impl From<Js8PackedCompound> for u32 {
     fn from(Js8PackedCompound(bits): Js8PackedCompound) -> u32 {
@@ -121,11 +123,28 @@ impl From<u32> for Js8PackedCompound {
 #[derive(Eq, PartialEq, Clone)]
 pub struct DenormalizedCompound(Compound);
 
+
+#[derive(PartialEq, Eq, Debug, Clone)]
+pub struct Js8PackedFrame(BitVec);
+// pub struct Js8PackedFrame(BitArr!(for 72, in u8, Lsb0));
+
+#[derive(PartialEq, Eq, Debug, FromRepr)]
+#[repr(u8)]
+pub enum FrameType {
+    FrameHeartbeatOrCQ = 0b000,
+    FrameCoumpound = 0b001,
+    FrameCoumpoundDirected = 0b010,
+    FrameDirected = 0b011,
+    FrameData = 0b100,           // actually 0b10x
+    FrameDataCompressed = 0b110, // actually 0b11x
+}
+
 pub struct JS8Protocol {}
 
 impl JS8Protocol {
     pub const NBASECALL: u32 = 37 * 36 * 10 * 27 * 27 * 27;
     const ALPHANUMERIC: &'static str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ /@"; // callsign and grid alphabet
+    const ALPHABET72: &'static str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-+/?.";
 
     /// Trick and adapt for some country
     /// Make sure it is at least 6 letters long including spaces if not long enough
@@ -264,6 +283,78 @@ impl JS8Protocol {
         let word = word.trim();
         // TODO js8 renormalize()
         Some(JS8Protocol::normalize(DenormalizedCompound(Compound::from_str(&word).ok()?)))
+    }
+
+    pub fn pack_command(cmd: Option<Command>) -> BitArr!(for 5, in u8, Lsb0) {
+        let mut bits = bitarr!(u8, Lsb0; 0; 5);
+        if let Some(cmd) = cmd {
+            bits[..5].store_le::<u8>((cmd as u8) % 32);
+        }
+        bits
+    }
+
+    pub fn pack_directed_frame(f: Frame) -> Option<Js8PackedFrame> {
+        if let Frame::FrameDirectedMessage { from, to, cmd, num } = f { 
+            let from = if from == None { Compound::BaseGroup { kind: BaseGroup::Incomplete } } else {from.unwrap() };
+            let to = to?;
+            let packed_flag = &(FrameType::FrameDirected as u8).view_bits::<Lsb0>()[.. 3];
+            let inum: u8 = if num == None { 0 } else { (1+30+ (num?.0 as i8)) as u8 };
+            let packed_extra = ((from.is_portable() as u8) << 7) + ((to.is_portable() as u8) << 6) + inum;
+            let packed_extra = packed_extra.view_bits::<Lsb0>();
+            let packed_from = &JS8Protocol::pack_callsign(from)?.0[0..28];
+            let packed_to = &JS8Protocol::pack_callsign(to)?.0[0..28];
+            let packed_cmd = &JS8Protocol::pack_command(cmd)[0..5];
+            let mut result = BitVec::<usize>::new();
+            //let mut result: BitArr!(for 72, in u8, Lsb0) = BitArray::new([0u8; 9]);
+            // let _debug_from = packed_from.load::<u32>();
+            // let _debug_to = packed_to.load::<u32>();
+            // let _debug_cmd = packed_cmd.load::<u8>();
+            // let _debug_flag = packed_flag.load::<u8>();
+            // let _debug_extra = packed_extra.load::<u8>();
+            // 3 + 28 + 28 + 5 = 64
+            assert!(packed_flag.len() == 3);
+            assert!(packed_from.len() == 28);
+            assert!(packed_from.len() == 28);
+            assert!(packed_cmd.len() == 5);
+            
+            result.extend(packed_cmd);
+            result.extend(packed_to);
+            result.extend(packed_from);
+            result.extend(packed_flag);
+
+            let debug_all = result.load::<u64>();
+            // (3+28+28+5)  + 2+6 = 72
+            return Some(Js8PackedFrame(JS8Protocol::pack72bits(result, packed_extra)?));
+        }
+        None
+    }
+
+    pub fn pack72bits<T>(value: BitVec<T>, rem: &BitSlice<u8>) -> Option<BitVec>
+    where T: BitStore
+    {
+        //let _debug: u64 = value.load::<u64>();
+        const MASK6: u8 = (1<<6)-1;
+        const MASK4: u8 = (1<<4)-1;
+        assert_eq!(64, value.len());
+        assert_eq!(8, rem.len());
+        let rem_high = ((value[0..4].load_le::<u8>() & MASK4) << 2) | rem[6..].load::<u8>();
+        let rem_low = rem[0..6].load::<u8>() & MASK6;
+        let mut result = bits![mut 0; 72].to_bitvec();
+        let rem_low = JS8Protocol::ALPHABET72.chars().nth(rem_low as usize)? as u8;
+        result[11*6..][0..6].store(rem_low);
+        let rem_high = JS8Protocol::ALPHABET72.chars().nth((rem_high & MASK6) as usize)? as u8;
+        result[10*6..][0..6].store(rem_high);
+
+        // let _debug11= result[11*6..][..6].load::<u8>();
+        // let _debug10= result[10*6..][..6].load::<u8>();
+
+        for (i, bits) in value.rchunks_exact(6).enumerate() {
+            let v = bits.load::<u8>() & MASK6;
+            let v = JS8Protocol::ALPHABET72.chars().nth(v as usize)? as u8;
+            result[i*6..][0..6].store(v);
+        };
+        assert_eq!(72, result.len());
+        Some(result)
     }
 }
 
@@ -748,16 +839,22 @@ mod tests {
     extern crate quickcheck;
 
     use std::str::FromStr;
+    use bitvec::prelude::*;
 
     use crate::compound::BaseGroup;
     use crate::compound::Compound;
+    use crate::js8frame::SnrReport;
     use crate::pack::JS8Protocol;
-    use crate::pack::Js8PackedCompound;
+    use crate::pack::{Js8PackedCompound, Js8PackedFrame};
     use crate::pack::{char_index, fmtmsg, grid2deg, GridError};
     use crate::pack::{crc12, pack28, pack75, pack87, pack_grid_or_report};
     use crate::pack::{NBASE, NGBASE};
+    use bitvec::bitarr;
     use quickcheck::TestResult;
     use regex::Regex;
+    use crate::{
+        js8frame::{Command, Frame},
+    };
 
     #[test]
     fn it_works() {
@@ -1085,4 +1182,62 @@ mod tests {
     //         p
     //     );
     // }
+
+    #[test]
+    fn pack_known_directed_message() {
+
+        assert_eq!(
+            97511401,
+            JS8Protocol::pack_callsign_str("DR4CNK").expect("valid callsign").0.load::<u32>()
+        );
+
+        assert_eq!(
+            146325342,
+            JS8Protocol::pack_callsign_str("KN4CRD").expect("valid callsign").0.load::<u32>()
+        );
+
+        let f = Frame::FrameDirectedMessage {
+            from: Some(Compound::from_str("DR4CNK").expect("valid callsign")),
+            to: Some(Compound::from_str("KN4CRD").expect("valid callsign")),
+            cmd: Some(Command::AgainQuestion),
+            num: None
+        };
+        let packed_f = JS8Protocol::pack_directed_frame(f);
+
+        let expected = [0x51u8, 0x76, 0x2B, 0x46, 0x71, 0x6E, 0x53, 0x4E, 0x77, 0x7A, 0x75, 0x30]
+            .map(|v| v & 0b111111);
+
+        let result = packed_f.unwrap().0;
+        let result: Vec<u8> = result.chunks_exact(6).map(|v| v.load::<u8>()).collect();
+        let result: &[u8]= &result[0..12];
+        assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn pack72bits_0xAAAAAAAA() {
+        let value: u64 = 0b10101010101010101010101010101010;
+        let value = value.view_bits().to_bitvec();
+        let rem= 0b10101010.view_bits();
+        let result = JS8Protocol::pack72bits(value, rem).expect("pack72bits failed");
+
+        let expected = [0x30u8, 0x30, 0x30, 0x30, 0x30, 0x41, 0x67, 0x67, 0x67, 0x67, 0x67, 0x67]
+            .map(|v| v & 0b111111);
+        let result: Vec<u8> = result.chunks_exact(6).map(|v| v.load::<u8>()).collect();
+        let result: &[u8]= &result[0..12];
+        assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn pack72bits_0x10842108() {
+        let value: u64 = 0b1000010000100001000010000100001000010000100001000010000100001000;
+        let value = value.view_bits().to_bitvec();
+        let rem= 0b01000100.view_bits();
+        let result = JS8Protocol::pack72bits(value, rem).expect("pack72bits failed");
+
+        let expected = [0x58u8 , 0x32 , 0x34 , 0x38 , 0x47 , 0x58 , 0x32 , 0x34 , 0x38 , 0x47 , 0x58 , 0x34]
+            .map(|v| v & 0b111111);
+        let result: Vec<u8> = result.chunks_exact(6).map(|v| v.load::<u8>()).collect();
+        let result: &[u8]= &result[0..12];
+        assert_eq!(expected, result);
+    }
 }
