@@ -1,8 +1,6 @@
 use async_io::Timer;
 use std::cmp;
 use std::ptr;
-use std::time::SystemTime;
-use std::time::Instant;
 
 use futuresdr::anyhow::Result;
 use futuresdr::runtime::Block;
@@ -103,7 +101,6 @@ impl<T: Send + 'static> Kernel for Strobe<T> {
             });
         }
 
-
         Ok(())
     }
 
@@ -116,4 +113,164 @@ impl<T: Send + 'static> Kernel for Strobe<T> {
         self.previous_release_count = 0;
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Strobe;
+    use async_io::Timer;
+    use std::time::Duration;
+    use futuresdr::blocks::FiniteSource;
+    use futuresdr::runtime::Flowgraph;
+    use futuresdr::runtime::Runtime;
+    use futuresdr::runtime::buffer::circular::Circular;
+    use rand::distributions::{Normal, Distribution};
+    use std::time::SystemTime;
+    use std::time::Instant;
+
+
+    #[test]
+    fn every_1s() {
+        let mut fg = Flowgraph::new();
+
+        // Qv+FqnSNwzu0 + bit 3
+        const VALUES: [u8; 4] = [1, 2, 3, 4];
+        let mut src_iter = VALUES.iter();
+        let src = FiniteSource::<&u8>::new(move || src_iter.next());
+        let src = fg.add_block(src);
+
+        // Release 1 every 1s
+        let arrival_shaper = Strobe::<&u8>::new(move |_previous_count, _current_available| {
+            let timer = Timer::after(Duration::from_secs(1));
+            (1, Some(timer), None) // Actually work but with initial delay
+            //(1, None, Some(timer)) // Expectation
+        });
+        let arrival_shaper = fg.add_block(arrival_shaper);
+
+        let mut starting_date = std::time::Instant::now();
+        let apply = futuresdr::blocks::Apply::<&u8,f32>::new(move |v| {
+            if **v == 1 {
+                starting_date = std::time::Instant::now();
+            }
+            (std::time::Instant::now() - starting_date).as_secs_f32()
+        });
+        let apply = fg.add_block(apply);
+
+        //let snk = NullSink::<f32>::new();
+        let snk = futuresdr::blocks::ConsoleSink::<f32>::new("\n");
+        let snk = fg.add_block(snk);
+
+        fg.connect_stream(src, "out", arrival_shaper, "in").expect("");
+        fg.connect_stream(arrival_shaper, "out", apply, "in").expect("");
+        fg.connect_stream(apply, "out", snk, "in").expect("");
+
+        Runtime::new().run(fg).expect("");
+
+    }
+
+    #[test]
+    fn interarrival_normal2s() {
+        let mut fg = Flowgraph::new();
+
+        // Qv+FqnSNwzu0 + bit 3
+        const VALUES: [u8; 6] = [1, 2, 3, 4, 5, 6];
+        let mut src_iter = VALUES.iter();
+        let src = FiniteSource::<&u8>::new(move || src_iter.next());
+        let src = fg.add_block(src);
+
+        // mean 2s, standard deviation 3
+        let normal = Normal::new(2_000.0, 3.0);
+        // Release up to 2 samples every 2s with standard deviation of 3 between 2
+        let arrival_shaper = Strobe::<&u8>::new(move |_previous_count, _current_available| {
+            let v = normal.sample(&mut rand::thread_rng());
+            let timer = Timer::after(Duration::from_millis(v as u64));
+            (2, Some(timer), None) // Actually work but with initial delay
+            //(2, None, Some(timer)) // Expectation
+        });
+        let arrival_shaper = fg.add_block(arrival_shaper);
+
+        let mut starting_date = std::time::Instant::now();
+        let apply = futuresdr::blocks::Apply::<&u8,(u8, f32)>::new(move |v| {
+            if **v == 1 {
+                starting_date = std::time::Instant::now();
+            }
+            (**v, (std::time::Instant::now() - starting_date).as_secs_f32())
+        });
+        let apply = fg.add_block(apply);
+
+        //let snk = NullSink::<f32>::new();
+        let snk = futuresdr::blocks::ConsoleSink::<(u8, f32)>::new("\n");
+        let snk = fg.add_block(snk);
+
+        fg.connect_stream(src, "out", arrival_shaper, "in").expect("");
+        fg.connect_stream(arrival_shaper, "out", apply, "in").expect("");
+        fg.connect_stream(apply, "out", snk, "in").expect("");
+
+        Runtime::new().run(fg).expect("");
+
+    }
+
+
+    #[test]
+    fn every_2s_wallclock() {
+        let mut fg = Flowgraph::new();
+
+        // Qv+FqnSNwzu0 + bit 3
+        const VALUES: [u8; 6] = [1, 2, 3, 4, 5, 6];
+        let mut src_iter = VALUES.iter();
+        let src = FiniteSource::<&u8>::new(move || src_iter.next());
+        let src = fg.add_block(src);
+
+        // Release 1 sample every 2s align with wallclock
+        const PERIOD: Duration = Duration::from_secs(2);
+        let arrival_shaper = Strobe::<&u8>::new(move |_previous_count, current_available| {
+            let wallclock = SystemTime::now();
+            let now = Instant::now();
+            let waiting_time = Duration::from_millis((PERIOD.as_millis() - wallclock.duration_since(SystemTime::UNIX_EPOCH).expect("").as_millis() % PERIOD.as_millis()) as u64);
+            let timer = Timer::at(now + waiting_time - Duration::from_millis(500) /* security so as to be on time */);
+            if current_available < 1 {
+                return (0, None, Some(timer));
+            } else {
+                let next_next_timer = Timer::at(Instant::now() + waiting_time + PERIOD);
+                if waiting_time < Duration::from_millis(500) {
+                    // Close to deadline, just actively wait now
+                    return (1, Some(timer), Some(next_next_timer));
+                } else if waiting_time > PERIOD - Duration::from_millis(300) {
+                    // We are not that late. Go NOW!
+                    return (1, None, Some(timer));
+                } else {
+                    // Nope, just wait the next release date
+                    return (0, Some(timer), Some(next_next_timer));
+                }
+            }
+        });
+        let arrival_shaper = fg.add_block(arrival_shaper);
+
+        let apply = futuresdr::blocks::Apply::<&u8,(u8, f32)>::new(move |v| {
+            (**v, SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("").as_secs_f32())
+        });
+        let apply = fg.add_block(apply);
+
+        //let snk = NullSink::<f32>::new();
+        let snk = futuresdr::blocks::ConsoleSink::<(u8, f32)>::new("");
+        let snk = fg.add_block(snk);
+
+        let sample_size = std::mem::size_of::<(u8, f32)>();
+        fg.connect_stream(
+            src, "out", 
+            arrival_shaper,"in").expect("");
+        fg.connect_stream_with_type(
+            arrival_shaper, "out",
+            apply, "in",
+            Circular::with_size(sample_size)).expect("");
+        fg.connect_stream_with_type(
+            apply, "out",
+            snk, "in",
+            Circular::with_size(sample_size)).expect("");
+
+        Runtime::new().run(fg).expect("");
+
+    }
+
+    // TODO: illustrate throttle
 }
