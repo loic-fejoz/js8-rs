@@ -70,6 +70,11 @@ impl<T: Send + 'static> Kernel for Strobe<T> {
         _mio: &mut MessageIo<Self>,
         _meta: &mut BlockMeta,
     ) -> Result<()> {
+        if io.block_on.is_some() {
+            //io.call_again = true;
+            return Ok(());
+        }
+
         let i = sio.input(0).slice::<T>();
         let o = sio.output(0).slice::<T>();
 
@@ -130,11 +135,11 @@ mod tests {
 
 
     #[test]
-    fn every_1s() {
+    fn strobe_every_1s() {
         let mut fg = Flowgraph::new();
 
         // Qv+FqnSNwzu0 + bit 3
-        const VALUES: [u8; 4] = [1, 2, 3, 4];
+        const VALUES: [u8; 5] = [1, 2, 3, 4, 5];
         let mut src_iter = VALUES.iter();
         let src = FiniteSource::<&u8>::new(move || src_iter.next());
         let src = fg.add_block(src);
@@ -142,8 +147,7 @@ mod tests {
         // Release 1 every 1s
         let arrival_shaper = Strobe::<&u8>::new(move |_previous_count, _current_available| {
             let timer = Timer::after(Duration::from_secs(1));
-            (1, Some(timer), None) // Actually work but with initial delay
-            //(1, None, Some(timer)) // Expectation
+            (1, None, Some(timer))
         });
         let arrival_shaper = fg.add_block(arrival_shaper);
 
@@ -169,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn interarrival_normal2s() {
+    fn strobe_interarrival_normal2s() {
         let mut fg = Flowgraph::new();
 
         // Qv+FqnSNwzu0 + bit 3
@@ -184,8 +188,7 @@ mod tests {
         let arrival_shaper = Strobe::<&u8>::new(move |_previous_count, _current_available| {
             let v = normal.sample(&mut rand::thread_rng());
             let timer = Timer::after(Duration::from_millis(v as u64));
-            (2, Some(timer), None) // Actually work but with initial delay
-            //(2, None, Some(timer)) // Expectation
+            (2, None, Some(timer))
         });
         let arrival_shaper = fg.add_block(arrival_shaper);
 
@@ -212,7 +215,7 @@ mod tests {
 
 
     #[test]
-    fn every_2s_wallclock() {
+    fn strobe_every_2s_wallclock() {
         let mut fg = Flowgraph::new();
 
         // Qv+FqnSNwzu0 + bit 3
