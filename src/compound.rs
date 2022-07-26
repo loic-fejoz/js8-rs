@@ -216,11 +216,15 @@ impl Arbitrary for Compound {
                 // See https://gist.github.com/JoshuaCarroll/f6b2c64992dfe23feed49a117f5d1a43
 
                 let digits: Vec<char> = ('0'..'9').collect();
+                #[allow(non_snake_case)]
                 let a_zA_Z: Vec<char> = ('A'..'Z').collect();
+                #[allow(non_snake_case)]
                 let a_zA_Z0_9: Vec<char> = ('A'..'Z').chain('0'..'9').collect();
 
                 let digits = &digits[..];
+                #[allow(non_snake_case)]
                 let a_zA_Z = &a_zA_Z[..];
+                #[allow(non_snake_case)]
                 let a_zA_Z0_9 = &a_zA_Z0_9[..];
 
                 let mut base: Vec<char> = Vec::new();

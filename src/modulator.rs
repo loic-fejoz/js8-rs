@@ -3,7 +3,6 @@ pub extern crate async_trait;
 
 use async_io::Timer;
 use futuresdr::log::debug;
-use regex::internal::Inst;
 use std::time::{Duration, SystemTime, Instant};
 
 use futuresdr::anyhow::Result;

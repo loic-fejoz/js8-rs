@@ -1,13 +1,12 @@
+use std::result;
 use std::str::FromStr;
 
 use crate::compound::{BaseGroup, Compound};
-use crate::js8frame::{Frame, Command};
+use crate::js8frame::{Command, Frame, TransmissionType};
 use bitvec::prelude::*;
-use crc_all::Crc;
 use regex::Regex;
 use strum::IntoEnumIterator;
 use strum_macros::FromRepr;
-
 
 pub const NBASE: u32 = 37 * 36 * 10 * 27 * 27 * 27;
 const NTOKENS: u32 = 2063592u32;
@@ -123,14 +122,19 @@ impl From<u32> for Js8PackedCompound {
 #[derive(Eq, PartialEq, Clone)]
 pub struct DenormalizedCompound(Compound);
 
-/// A JS8 Frame packed as bits.
+/// A JS8 data packed as bits.
+/// Actually, it is 72 = 12 * 6 bits
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct Js8Packet(BitVec);
 // pub struct Js8Packet(BitArr!(for 72, in u8, Lsb0));
 
+/// The original js8call program actually encode the bits as characters
+/// from a limited alphabet. This methods does the conversion for debugging purpose.
+/// See `JS8Protocol::ALPHABET72`
 impl From<Js8Packet> for String {
     fn from(item: Js8Packet) -> Self {
-        let result: String = item.0
+        let result: String = item
+            .0
             .chunks_exact(6)
             .map(|v| v.load::<u8>() as usize)
             .map(|v| JS8Protocol::ALPHABET72.chars().nth(v).expect("valid index"))
@@ -139,19 +143,19 @@ impl From<Js8Packet> for String {
     }
 }
 
+/// Retrieve each 6bits as indivuals
 impl From<Js8Packet> for Vec<u8> {
     fn from(item: Js8Packet) -> Self {
-        let result = item.0
-        .chunks_exact(6)
-        .map(|v| v.load::<u8>())
-        .collect();
+        let result = item.0.chunks_exact(6).map(|v| v.load::<u8>()).collect();
         result
     }
 }
 
+/// For debugging purpose
 impl From<Js8Packet> for Vec<char> {
     fn from(item: Js8Packet) -> Self {
-        let result: Vec<char> = item.0
+        let result: Vec<char> = item
+            .0
             .chunks_exact(6)
             .map(|v| v.load::<u8>() as usize)
             .map(|v| JS8Protocol::ALPHABET72.chars().nth(v).expect("valid index"))
@@ -161,15 +165,39 @@ impl From<Js8Packet> for Vec<char> {
 }
 
 impl Js8Packet {
-    pub fn u8_array(self: Js8Packet) -> [u8; 12] {
-        let result: Vec<u8> = self.0
+    /// For debugging purpose
+    /// See From<Js8Packet> for String
+    pub fn u8_array(self: &Js8Packet) -> [u8; 12] {
+        let result: Vec<u8> = self
+            .0
             .chunks_exact(6)
             .map(|v| v.load::<u8>() as usize)
             .map(|v| JS8Protocol::ALPHABET72.chars().nth(v).expect("valid index") as u8)
             .collect();
-        let mut r: [u8;12] = [0; 12];
+        let mut r: [u8; 12] = [0; 12];
         r.copy_from_slice(&result[0..12]);
         r
+    }
+}
+
+/// A JS8 Frame packed as bits.
+/// Actually, it is 72 (packet) + 12 (crc) + 3 = 87-bits
+#[derive(PartialEq, Eq, Debug, Clone)]
+pub struct Js8Frame(BitVec);
+// pub struct Js8Frame(BitArr!(for 87, in u8, Lsb0));
+
+impl From<u128> for Js8Frame {
+    fn from(item: u128) -> Self {
+        let mut result = BitVec::<usize>::new();
+        result.extend(&(item as u64).view_bits::<Lsb0>()[..64]);
+        result.extend(&(((item >> 64) & 0xFFFFFFFF) as u64).view_bits::<Lsb0>()[..87 - 64]);
+        Js8Frame(result)
+    }
+}
+
+impl From<Js8Frame> for u128 {
+    fn from(item: Js8Frame) -> Self {
+        item.0[0..87].load::<u128>()
     }
 }
 
@@ -189,7 +217,8 @@ pub struct JS8Protocol {}
 impl JS8Protocol {
     pub const NBASECALL: u32 = 37 * 36 * 10 * 27 * 27 * 27;
     const ALPHANUMERIC: &'static str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ /@"; // callsign and grid alphabet
-    const ALPHABET72: &'static str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-+/?.";
+    const ALPHABET72: &'static str =
+        "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-+/?.";
 
     /// Trick and adapt for some country
     /// Make sure it is at least 6 letters long including spaces if not long enough
@@ -242,11 +271,17 @@ impl JS8Protocol {
             if callsign.starts_with("3DA0") {
                 // workaround for swaziland
                 let callsign = "3DA0".to_string() + &callsign[4..];
-                return Compound::Callsign { base: callsign, is_portable: p };
+                return Compound::Callsign {
+                    base: callsign,
+                    is_portable: p,
+                };
             } else if callsign.starts_with("Q") {
                 // workaround for sguineawaziland
                 let callsign = "3X".to_string() + &callsign[1..];
-                return Compound::Callsign { base: callsign, is_portable: p };
+                return Compound::Callsign {
+                    base: callsign,
+                    is_portable: p,
+                };
             }
         }
         callsign
@@ -261,7 +296,7 @@ impl JS8Protocol {
         let mut indexes = callsign
             .chars()
             .enumerate()
-            .map(|(i, c)| JS8Protocol::ALPHANUMERIC.find(c))
+            .map(|(_i, c)| JS8Protocol::ALPHANUMERIC.find(c))
             .collect::<Vec<Option<usize>>>();
         if indexes.len() < 6 {
             return None;
@@ -294,7 +329,9 @@ impl JS8Protocol {
 
     pub fn unpack_callsign(callsign: Js8PackedCompound) -> Option<Compound> {
         let n28 = u32::from(callsign);
-        if JS8Protocol::NBASECALL < n28 && n28 <= JS8Protocol::NBASECALL + BaseGroup::iter().len() as u32 {
+        if JS8Protocol::NBASECALL < n28
+            && n28 <= JS8Protocol::NBASECALL + BaseGroup::iter().len() as u32
+        {
             let callsign = BaseGroup::iter().nth((n28 - JS8Protocol::NBASECALL - 1) as usize)?;
             return Some(Compound::BaseGroup { kind: callsign });
         }
@@ -327,24 +364,37 @@ impl JS8Protocol {
         let word: String = word.iter().collect();
         let word = word.trim();
         // TODO js8 renormalize()
-        Some(JS8Protocol::normalize(DenormalizedCompound(Compound::from_str(&word).ok()?)))
+        Some(JS8Protocol::normalize(DenormalizedCompound(
+            Compound::from_str(&word).ok()?,
+        )))
     }
 
     pub fn pack_command(cmd: Option<Command>) -> BitArr!(for 5, in u8, Lsb0) {
         let mut bits = bitarr!(u8, Lsb0; 0; 5);
         if let Some(cmd) = cmd {
-            bits[..5].store_le::<u8>((cmd as u8) % 32);
+            bits[..5].store::<u8>((cmd as u8) % 32);
         }
         bits
     }
 
     pub fn pack_directed_frame(f: Frame) -> Option<Js8Packet> {
-        if let Frame::FrameDirectedMessage { from, to, cmd, num } = f { 
-            let from = if from == None { Compound::BaseGroup { kind: BaseGroup::Incomplete } } else {from.unwrap() };
+        if let Frame::FrameDirectedMessage { from, to, cmd, num } = f {
+            let from = if from == None {
+                Compound::BaseGroup {
+                    kind: BaseGroup::Incomplete,
+                }
+            } else {
+                from.unwrap()
+            };
             let to = to?;
-            let packed_flag = &(FrameType::FrameDirected as u8).view_bits::<Lsb0>()[.. 3];
-            let inum: u8 = if num == None { 0 } else { (1+30+ (num?.0 as i8)) as u8 };
-            let packed_extra = ((from.is_portable() as u8) << 7) + ((to.is_portable() as u8) << 6) + inum;
+            let packed_flag = &(FrameType::FrameDirected as u8).view_bits::<Lsb0>()[..3];
+            let inum: u8 = if num == None {
+                0
+            } else {
+                (1 + 30 + (num?.0 as i8)) as u8
+            };
+            let packed_extra =
+                ((from.is_portable() as u8) << 7) + ((to.is_portable() as u8) << 6) + inum;
             let packed_extra = packed_extra.view_bits::<Lsb0>();
             let packed_from = &JS8Protocol::pack_callsign(from)?.0[0..28];
             let packed_to = &JS8Protocol::pack_callsign(to)?.0[0..28];
@@ -361,7 +411,7 @@ impl JS8Protocol {
             assert!(packed_from.len() == 28);
             assert!(packed_from.len() == 28);
             assert!(packed_cmd.len() == 5);
-            
+
             result.extend(packed_cmd);
             result.extend(packed_to);
             result.extend(packed_from);
@@ -375,20 +425,21 @@ impl JS8Protocol {
     }
 
     pub fn pack72bits<T>(value: BitVec<T>, rem: &BitSlice<u8>) -> Option<BitVec>
-    where T: BitStore
+    where
+        T: BitStore,
     {
         //let _debug: u64 = value.load::<u64>();
-        const MASK6: u8 = (1<<6)-1;
-        const MASK4: u8 = (1<<4)-1;
+        const MASK6: u8 = (1 << 6) - 1;
+        const MASK4: u8 = (1 << 4) - 1;
         assert_eq!(64, value.len());
         assert_eq!(8, rem.len());
         let rem_high = ((value[0..4].load_le::<u8>() & MASK4) << 2) | rem[6..].load::<u8>();
         let rem_low = rem[0..6].load::<u8>() & MASK6;
         let mut result = bits![mut 0; 72].to_bitvec();
         // let rem_low = JS8Protocol::ALPHABET72.chars().nth(rem_low as usize)? as u8;
-        result[11*6..][0..6].store(rem_low);
+        result[11 * 6..][0..6].store(rem_low);
         // let rem_high = JS8Protocol::ALPHABET72.chars().nth((rem_high & MASK6) as usize)? as u8;
-        result[10*6..][0..6].store(rem_high);
+        result[10 * 6..][0..6].store(rem_high);
 
         // let _debug11= result[11*6..][..6].load::<u8>();
         // let _debug10= result[10*6..][..6].load::<u8>();
@@ -396,17 +447,91 @@ impl JS8Protocol {
         for (i, bits) in value.rchunks_exact(6).enumerate() {
             let v = bits.load::<u8>() & MASK6;
             // let v = JS8Protocol::ALPHABET72.chars().nth(v as usize)? as u8;
-            result[i*6..][0..6].store(v);
-        };
+            result[i * 6..][0..6].store(v);
+        }
         assert_eq!(72, result.len());
         Some(result)
+    }
+
+    pub fn genjs8frame(packet: Js8Packet, i3bits: TransmissionType) -> Option<Js8Frame> {
+        let mut cbits = BitVec::<u8>::new();
+        assert_eq!(72, packet.0.len());
+        cbits.extend(packet.0.clone());
+        assert_eq!(72, cbits.len());
+        for v in cbits.chunks_exact_mut(6) {
+            v.reverse();
+        }
+
+        let mut i3bits = i3bits as u8;
+        let mut i1msg8bitbytes = cbits;
+        let v = i3bits.view_bits_mut::<Lsb0>();
+        v.reverse();
+        i1msg8bitbytes.extend(&v[5..]);
+        i1msg8bitbytes.extend(&0u16.view_bits::<Lsb0>()[..5+7]); // place of the twelve bits of the CRC
+
+        for v in i1msg8bitbytes.chunks_exact_mut(8) {
+            v.reverse();
+        }
+
+        // assert_eq!(11 * 8, i1msg8bitbytes.len());
+        let result: Vec<u8> = i1msg8bitbytes
+            .chunks(8)
+            .map(|v| v.load::<u8>())
+            .collect();
+        //let result = &result[..];
+
+        // // Expectation for DR4CNK: KN4CRD AGN? as per the JS8call C++
+        // let expected = [107u8, 159, 207, 211, 23, 23, 235, 222, 0, 96, 0];
+        // // aka i8 [107,  -97,  -49,  -45,   23,   23,  -21,  -34,    0,   96,    0];
+        // let d: Vec<String> = expected.iter().map(|v| format!("{:#010b}", v)).collect();
+        // println!("{}", d.join(", "));
+        // let d: Vec<String> = result.iter().map(|v| format!("{:#010b}", v)).collect();
+        // println!("{}", d.join(", "));
+        // assert_eq!(expected, result[..]);
+
+        //assert_eq!(87, i1msg8bitbytes.len());
+         //assert_eq!(8*11, i1msg8bitbytes.len());
+
+        // let icrc12 = mycrc12(i1msg8bitbytes);
+        let icrc12 = crc12(&result);
+        // println!("expected={:#014b},\nactual  ={:#014b}", 918, icrc12);
+        //assert_eq!(918, icrc12);
+        let icrc12 = icrc12 ^ 42u16;
+        // println!("expected={:#014b},\nactual  ={:#014b}", 956, icrc12);
+
+        let mut cbits = BitVec::<usize>::new();
+        cbits.extend(packet.0);
+        for v in cbits.chunks_exact_mut(6) {
+            v.reverse();
+        }
+
+        // let mut i3bits = i3bits as u8;
+        // let mut i1msg8bitbytes = cbits;
+        // let v = i3bits.view_bits_mut::<Lsb0>();
+        // v.reverse();
+        // i1msg8bitbytes.extend(&v[5..]);
+        // i1msg8bitbytes.extend(&0u16.view_bits::<Lsb0>()[..5+7]); // place of the twelve bits of the CRC
+
+        let mut i3bits = i3bits as u8;
+        // let mut i1msg8bitbytes = &mut i3bits.view_bits_mut::<Lsb0>()[..3];
+        let v = i3bits.view_bits_mut::<Lsb0>();
+        //v.reverse();
+        cbits.extend(&v[5..]);
+
+        let mut icrc12 = icrc12;
+        for v in icrc12.view_bits_mut::<Lsb0>().chunks_exact_mut(12) {
+            v.reverse();
+        }
+        cbits.extend(&icrc12.view_bits::<Lsb0>()[..12]);
+        assert!(cbits.len() == 87);
+        Some(Js8Frame(cbits))
     }
 }
 
 /// Converts Maidenhead grid locator to degrees of **West** longitude
 /// and North latitude.
 pub fn grid2deg(locator: &str) -> Option<(f32, f32)> {
-    let mut locator_overload: String;
+    let locator_overload: String;
     let mut locator = locator;
     if !locator.is_ascii() {
         return None;
@@ -437,7 +562,7 @@ pub enum GridError {
 pub const NGBASE: u16 = 180 * 180;
 pub fn pack_grid_or_report(callsign: &str) -> Result<u16, GridError> {
     let mut callsign = callsign;
-    let mut local_callsign: String;
+    let local_callsign: String;
     if callsign.starts_with("-") {
         let report = callsign[1..3].parse::<u16>().unwrap();
         if 1 <= report && report <= 30 {
@@ -537,9 +662,54 @@ pub fn pack75(msg: &str) -> Option<[u8; 10]> {
     Some(result)
 }
 
+/// Compute CRC-12 as per WSJTX
+/// See https://sourceforge.net/p/wsjt/mailman/wsjt-devel/thread/77194059-7015-2ab2-0b4e-addf044c4d0b%40classdesign.com/#msg36137869
+/// and https://users.ece.cmu.edu/~koopman/crc/crc12.html
+/// Should be (0xc06; 0x180d) <=> (0xb01; 0x1603) {79,27,24} | gold |
+/// JS8Call source code use truncated polynomial 0xc06
+/// return boost::augmented_crc<12, 0xc06> (data, 11);
 pub fn crc12(data: &[u8]) -> u16 {
-    let mut crc12 = Crc::<u16>::new(0xc06, 12, 0x00, 0x00, false);
-    crc12.update(data)
+    // let mut crc12 = Crc::<u16>::new(0xc06, 12, 0x00, 0x00, false);
+    // crc12.update(data)
+    let mut input = Vec::<u8>::new();
+    input.extend(data);
+    input.reverse();
+    let mut bv = BitVec::<u8,Lsb0>::new();
+    bv.extend(std::iter::repeat(false).take(data.len() * 8));
+    for (slot, byte) in bv
+        .chunks_mut(8)
+        .zip(input.iter().copied())
+    {
+        slot.store_le(byte);
+    }
+    let c = crate::pack::mycrc12(bv);
+    c
+}
+
+pub fn mycrc12(data: BitVec<u8,Lsb0>) -> u16
+{
+    let mut data = data.clone();
+    data.reverse();
+    print!("reversed input=");
+    for (i, bit) in data.chunks_exact(1).enumerate() {
+        let b = (bit.load::<u8>() & 0b1) as u16;
+        print!("{}", b);
+        if (i+1) % 4 == 0 {
+            print!("_");
+        }
+    }
+    println!("");
+    const MASK12: u16 = 0b1000_0000_0000;
+    let mut register: u16 = 0x0000;
+    for (_, bit) in data.chunks_exact(1).enumerate() {
+        let popped_out = register & MASK12;
+        register = ((register << 1) & 0b1111_1111_1110 ) | ((bit.load::<u8>() & 0b1) as u16);
+        if popped_out !=0 {
+            register = register ^ 0xc06;
+        }
+       // println!("register={:#014b}", register);
+    }
+    register
 }
 
 // pub fn crc14(data: &[u8]) -> u16 {
@@ -883,24 +1053,20 @@ mod tests {
     #[cfg(test)]
     extern crate quickcheck;
 
-    use std::result;
-    use std::str::FromStr;
     use bitvec::prelude::*;
+    use std::str::FromStr;
 
     use crate::compound::BaseGroup;
     use crate::compound::Compound;
     use crate::js8frame::SnrReport;
+    use crate::js8frame::{Command, Frame};
     use crate::pack::JS8Protocol;
-    use crate::pack::{Js8PackedCompound, Js8Packet};
     use crate::pack::{char_index, fmtmsg, grid2deg, GridError};
-    use crate::pack::{crc12, pack28, pack75, pack87, pack_grid_or_report};
+    use crate::pack::{crc12, pack28, pack75, pack_grid_or_report};
+    use crate::pack::{Js8PackedCompound, Js8Packet};
     use crate::pack::{NBASE, NGBASE};
-    use bitvec::bitarr;
     use quickcheck::TestResult;
     use regex::Regex;
-    use crate::{
-        js8frame::{Command, Frame},
-    };
 
     #[test]
     fn it_works() {
@@ -1043,32 +1209,32 @@ mod tests {
         );
     }
 
-    #[test]
-    fn crc_test() {
-        let data = pack75("CQ DL1ABC JO62").unwrap();
-        let crc = crc12(&data);
-        assert_eq!(crc, 2688);
-    }
+    // #[test]
+    // fn pack75_crc_test() {
+    //     let data = pack75("CQ DL1ABC JO62").unwrap();
+    //     let crc = crc12(&data);
+    //     assert_eq!(crc, 2688);
+    // }
 
-    #[test]
-    fn pack87_test() {
-        assert_eq!(
-            pack87("CQ DL1ABC JO62"),
-            Some([
-                250,
-                8,
-                49,
-                147,
-                68,
-                74,
-                17,
-                142,
-                209,
-                8 | (((2688 & 0xFFF) << 1) >> 8) as u8,
-                ((2688 & 0x0FF) as u8) << 1
-            ])
-        );
-    }
+    // #[test]
+    // fn pack87_test() {
+    //     assert_eq!(
+    //         pack87("CQ DL1ABC JO62"),
+    //         Some([
+    //             250,
+    //             8,
+    //             49,
+    //             147,
+    //             68,
+    //             74,
+    //             17,
+    //             142,
+    //             209,
+    //             8 | (((2688 & 0xFFF) << 1) >> 8) as u8,
+    //             ((2688 & 0x0FF) as u8) << 1
+    //         ])
+    //     );
+    // }
 
     #[test]
     fn pack_callsign_known() {
@@ -1117,7 +1283,9 @@ mod tests {
             );
             assert_eq!(
                 Some(callsign),
-                JS8Protocol::unpack_callsign(Js8PackedCompound::from(JS8Protocol::NBASECALL + 1 + (i as u32)))
+                JS8Protocol::unpack_callsign(Js8PackedCompound::from(
+                    JS8Protocol::NBASECALL + 1 + (i as u32)
+                ))
             );
         }
     }
@@ -1151,10 +1319,7 @@ mod tests {
         let packed_callsign = JS8Protocol::pack_callsign(callsign.clone());
         let denormalized_callsign = Compound::from_str("QA0XYZ").unwrap();
         let packed_denormalized_callsign = JS8Protocol::pack_callsign(denormalized_callsign);
-        assert_eq!(
-            packed_callsign,
-            packed_denormalized_callsign
-        );
+        assert_eq!(packed_callsign, packed_denormalized_callsign);
         assert_eq!(
             Some(callsign),
             JS8Protocol::unpack_callsign(packed_denormalized_callsign.unwrap())
@@ -1162,7 +1327,14 @@ mod tests {
     }
 
     #[quickcheck]
-    fn qc_pack_unpack_callsig(c1: char, c2: char, c3: char, c4: char, c5: char, c6: char) -> TestResult {
+    fn qc_pack_unpack_callsig(
+        c1: char,
+        c2: char,
+        c3: char,
+        c4: char,
+        c5: char,
+        c6: char,
+    ) -> TestResult {
         let callsign: String = [c1, c2, c3, c4, c5, c6].iter().collect();
         let regex = Regex::new(r"(([0-9A-Z ])([0-9A-Z])([0-9])([A-Z ])([A-Z ])([A-Z ]))").unwrap();
         if !regex.is_match(&callsign) {
@@ -1182,42 +1354,44 @@ mod tests {
         let n28 = Js8PackedCompound::from(n28);
         let unpacked_callsign = JS8Protocol::unpack_callsign(n28);
         if unpacked_callsign == None {
-            return
+            return;
         }
         let unpacked_callsign = unpacked_callsign.unwrap();
-        if let Compound::Callsign {ref base, is_portable: _ } = unpacked_callsign {
-            let regex = Regex::new(r"(([0-9A-Z ])([0-9A-Z])([0-9])([A-Z ])([A-Z ])([A-Z ]))").unwrap();
+        if let Compound::Callsign {
+            ref base,
+            is_portable: _,
+        } = unpacked_callsign
+        {
+            let regex =
+                Regex::new(r"(([0-9A-Z ])([0-9A-Z])([0-9])([A-Z ])([A-Z ])([A-Z ]))").unwrap();
             if !regex.is_match(base) {
                 return;
             }
         }
         let packed_unpacked_callsign = JS8Protocol::pack_callsign(unpacked_callsign);
         if packed_unpacked_callsign == None {
-            return
+            return;
         }
-        assert_eq!(
-            Some(n28),
-            packed_unpacked_callsign
-        );
+        assert_eq!(Some(n28), packed_unpacked_callsign);
     }
 
-//     #[test]
-//     fn unpack_pack_callsign() {
-//         let n28 = 0b00001111100001000010011010010111u32;
-//         let n28 = Js8PackedCompound::from(n28);
-//         let unpacked_callsign = JS8Protocol::unpack_callsign(n28).unwrap();
-//         if let Compound::Callsign {ref base, is_portable: _ } = unpacked_callsign {
-//             let regex = Regex::new(r"(([0-9A-Z ])([0-9A-Z])([0-9])([A-Z ])([A-Z ])([A-Z ]))").unwrap();
-//             if !regex.is_match(base) {
-//                 return;
-//             }
-//         }
-//         let packed_unpacked_callsign = JS8Protocol::pack_callsign(unpacked_callsign).unwrap();
-//         assert_eq!(
-//             u32::from(n28),
-//             u32::from(packed_unpacked_callsign)
-//         );
-//     }
+    //     #[test]
+    //     fn unpack_pack_callsign() {
+    //         let n28 = 0b00001111100001000010011010010111u32;
+    //         let n28 = Js8PackedCompound::from(n28);
+    //         let unpacked_callsign = JS8Protocol::unpack_callsign(n28).unwrap();
+    //         if let Compound::Callsign {ref base, is_portable: _ } = unpacked_callsign {
+    //             let regex = Regex::new(r"(([0-9A-Z ])([0-9A-Z])([0-9])([A-Z ])([A-Z ])([A-Z ]))").unwrap();
+    //             if !regex.is_match(base) {
+    //                 return;
+    //             }
+    //         }
+    //         let packed_unpacked_callsign = JS8Protocol::pack_callsign(unpacked_callsign).unwrap();
+    //         assert_eq!(
+    //             u32::from(n28),
+    //             u32::from(packed_unpacked_callsign)
+    //         );
+    //     }
 
     // #[quickcheck]
     // fn qc_unpack_pack_compound(callsign: Compound) {
@@ -1231,48 +1405,65 @@ mod tests {
 
     #[test]
     fn pack_known_directed_message() {
-
         assert_eq!(
             97511401,
-            JS8Protocol::pack_callsign_str("DR4CNK").expect("valid callsign").0.load::<u32>()
+            JS8Protocol::pack_callsign_str("DR4CNK")
+                .expect("valid callsign")
+                .0
+                .load::<u32>()
         );
 
         assert_eq!(
             146325342,
-            JS8Protocol::pack_callsign_str("KN4CRD").expect("valid callsign").0.load::<u32>()
+            JS8Protocol::pack_callsign_str("KN4CRD")
+                .expect("valid callsign")
+                .0
+                .load::<u32>()
         );
 
         let f = Frame::FrameDirectedMessage {
             from: Some(Compound::from_str("DR4CNK").expect("valid callsign")),
             to: Some(Compound::from_str("KN4CRD").expect("valid callsign")),
             cmd: Some(Command::AgainQuestion),
-            num: None
+            num: None,
         };
         let packed_f = JS8Protocol::pack_directed_frame(f);
 
-        let expected = [0x51, 0x76, 0x2B, 0x46, 0x71, 0x6E, 0x53, 0x4E, 0x77, 0x7A, 0x75, 0x30];
+        let expected = [
+            0x51, 0x76, 0x2B, 0x46, 0x71, 0x6E, 0x53, 0x4E, 0x77, 0x7A, 0x75, 0x30,
+        ];
 
         let packet = packed_f.unwrap();
         let p_str: String = packet.clone().into();
         assert_eq!("Qv+FqnSNwzu0", p_str);
 
-        // let result: Vec<char> = packet.clone().into();
-        // let result: Vec<u8> = result.iter().map(|v| *v as u8).collect();
-        // let result = &result[0..12];
         let result = packet.u8_array();
         assert_eq!(expected, result);
+
+        let ft8msgbits: u128 = 0b001111011100110000000000111101111010111111010001110100011001011111100111111100111010110;
+        let frame =
+            JS8Protocol::genjs8frame(packet, crate::js8frame::TransmissionType::JS8CallUnique)
+                .expect("");
+        let frame_bits: u128 = frame.into();
+        //assert_eq!(ft8msgbits, frame_bits);
+        assert_eq!(
+            format!("{:#089b}", ft8msgbits),
+            format!("{:#089b}", frame_bits)
+        );
     }
 
     #[test]
-    fn pack72bits_0xAAAAAAAA() {
+    fn pack72bits_0xaaaaaaaa() {
         let value: u64 = 0b10101010101010101010101010101010;
         let value = value.view_bits().to_bitvec();
-        let rem= 0b10101010.view_bits();
+        let rem = 0b10101010.view_bits();
         let result = JS8Protocol::pack72bits(value, rem).expect("pack72bits failed");
         let result = Js8Packet(result);
 
-        let expected = [0x30u8, 0x30, 0x30, 0x30, 0x30, 0x41, 0x67, 0x67, 0x67, 0x67, 0x67, 0x67];
-        let result: [u8; 12]= result.u8_array();
+        let expected = [
+            0x30u8, 0x30, 0x30, 0x30, 0x30, 0x41, 0x67, 0x67, 0x67, 0x67, 0x67, 0x67,
+        ];
+        let result: [u8; 12] = result.u8_array();
         assert_eq!(expected, result);
     }
 
@@ -1280,12 +1471,63 @@ mod tests {
     fn pack72bits_0x10842108() {
         let value: u64 = 0b1000010000100001000010000100001000010000100001000010000100001000;
         let value = value.view_bits().to_bitvec();
-        let rem= 0b01000100.view_bits();
+        let rem = 0b01000100.view_bits();
         let result = JS8Protocol::pack72bits(value, rem).expect("pack72bits failed");
         let result = Js8Packet(result);
 
-        let expected = [0x58u8 , 0x32 , 0x34 , 0x38 , 0x47 , 0x58 , 0x32 , 0x34 , 0x38 , 0x47 , 0x58 , 0x34];
-        let result: [u8; 12]= result.u8_array();
+        let expected = [
+            0x58u8, 0x32, 0x34, 0x38, 0x47, 0x58, 0x32, 0x34, 0x38, 0x47, 0x58, 0x34,
+        ];
+        let result: [u8; 12] = result.u8_array();
         assert_eq!(expected, result);
+    }
+
+    #[test]
+    fn crc12_known() {
+        {
+            let t1 = [107u8, 159, 207, 211, 23, 23, 235, 222, 0, 96, 0];
+            let c = crc12(&t1);
+            assert_eq!(0x396, c);
+        }
+
+        {
+            let t1 = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+            let c = crc12(&t1);
+            assert_eq!(0x0991, c);
+        }
+
+        {
+            let t1 = [11u8, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1];
+            let c = crc12(&t1);
+            assert_eq!(0x00cd, c);
+        }
+
+        {
+            let t1 = [1u8, 2, 4, 8, 16, 32, 64, 128, 255, 3, 9];
+            let c = crc12(&t1);
+            assert_eq!(0x0053, c);
+        }
+    }
+
+    #[test]
+    fn mycrc12_known() {
+        {
+            let t1 = [0x0u8, 0b0001_0000, 0x0];
+            let c = crate::pack::crc12(&t1);
+            println!("{:014b} {:014b}", 0x0c06, c);
+            assert_eq!(0x0c06, c);
+        }
+        {
+            let t1 = [0b10000000u8, 0x0, 0x0];
+            let c = crate::pack::crc12(&t1);
+            println!("{:014b} {:014b}", 0x01be, c);
+            assert_eq!(0x01be, c);
+        }
+        {
+            let t1 = [0x0u8, 0b10000000, 0x0];
+            let c = crate::pack::crc12(&t1);
+            println!("{:014b} {:014b}", 0x0c2e, c);
+            assert_eq!(0x0c2e, c);
+        }
     }
 }

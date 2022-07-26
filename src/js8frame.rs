@@ -5,7 +5,7 @@ use strum::IntoEnumIterator;
 use strum_macros::{EnumIter, FromRepr};
 
 #[cfg(test)]
-use quickcheck::{empty_shrinker, single_shrinker, Arbitrary, Gen};
+use quickcheck::{Arbitrary, Gen};
 
 use crate::compound::Compound;
 
@@ -347,6 +347,7 @@ pub enum TransmissionType {
     JS8CallFirst = 0b001, // <- the first frame of a message
     JS8CallLast = 0b010,  // <- the last frame of a message
     JS8CallData = 0b100,  // <- flagged frame (no frame type header)
+    JS8CallUnique = 0b011, // First & Last
 }
 
 #[derive(PartialEq, Debug)]
