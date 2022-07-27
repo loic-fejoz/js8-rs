@@ -595,6 +595,13 @@ impl JS8Protocol {
         }
         tones
     }
+
+    pub fn genjs8(packet: Js8Packet, i3bits: TransmissionType, costas: CostasTones) -> [u8; 58+21] {
+        let frame = JS8Protocol::genjs8frame(packet, i3bits).expect("");
+        let frame = JS8Protocol::genjs8ldpc(frame);
+        let tones = JS8Protocol::genjs8tones(frame, costas);
+        tones
+    }
 }
 
 /// Converts Maidenhead grid locator to degrees of **West** longitude

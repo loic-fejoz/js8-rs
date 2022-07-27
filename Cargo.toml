@@ -1,5 +1,5 @@
 [package]
-name = "js8-rs"
+name = "js8"
 version = "0.1.0"
 edition = "2021"
 
@@ -38,5 +38,5 @@ rand = "0.6.5"
 crate-type = ["rlib"]
 
 [[bin]]
-name = "modulator"
-path = "src/modulator.rs"
+name = "msg-generator"
+path = "src/bin/msg-generator.rs"

@@ -14,25 +14,6 @@ use futuresdr::runtime::StreamIoBuilder;
 use futuresdr::runtime::WorkIo;
 
 /// Release samples based on timing provided by the release pattern function.
-///
-/// # Inputs
-///
-/// `in`: Input
-///
-/// # Outputs
-///
-/// `out`: Output
-///
-/// # Usage
-/// ```
-/// use futuresdr::blocks::strobe;
-/// use futuresdr::runtime::Flowgraph;
-/// use num_complex::Complex;
-///
-/// let mut fg = Flowgraph::new();
-///
-/// let strobe = fg.add_block(Strobe::<Complex<f32>>::new(1_000_000.0));
-/// ```
 #[cfg_attr(docsrs, doc(cfg(not(target_arch = "wasm32"))))]
 pub struct Strobe<T>
 where
@@ -122,7 +103,7 @@ impl<T: Send + 'static> Kernel for Strobe<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::Strobe;
+    use crate::strobe::Strobe;
     use async_io::Timer;
     use std::time::Duration;
     use futuresdr::blocks::FiniteSource;
