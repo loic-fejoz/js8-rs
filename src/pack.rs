@@ -1,4 +1,5 @@
 use std::result;
+use std::fmt;
 use std::str::FromStr;
 
 use crate::compound::{BaseGroup, Compound};
@@ -183,12 +184,12 @@ impl Js8Packet {
 /// A JS8 Frame packed as bits.
 /// Actually, it is 72 (packet) + 12 (crc) + 3 = 87-bits
 #[derive(PartialEq, Eq, Debug, Clone)]
-pub struct Js8Frame(BitVec);
+pub struct Js8Frame(BitVec<u8,Lsb0>);
 // pub struct Js8Frame(BitArr!(for 87, in u8, Lsb0));
 
 impl From<u128> for Js8Frame {
     fn from(item: u128) -> Self {
-        let mut result = BitVec::<usize>::new();
+        let mut result = BitVec::<u8>::new();
         result.extend(&(item as u64).view_bits::<Lsb0>()[..64]);
         result.extend(&(((item >> 64) & 0xFFFFFFFF) as u64).view_bits::<Lsb0>()[..87 - 64]);
         Js8Frame(result)
@@ -200,6 +201,21 @@ impl From<Js8Frame> for u128 {
         item.0[0..87].load::<u128>()
     }
 }
+
+/// A JS8 Frame after low parity density code packing.
+/// Actually, it is encodede as 174 bits
+#[derive(PartialEq, Eq, Clone)]
+pub struct Js8LDPCFrame(BitArr!(for 174, in u8, Lsb0));
+
+impl fmt::Debug for Js8LDPCFrame {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for b in self.0[..174].chunks(1) {
+            write!(f, "{}",  b.load::<u8>())?;
+        }
+        Ok(())
+    }
+}
+
 
 #[derive(PartialEq, Eq, Debug, FromRepr)]
 #[repr(u8)]
@@ -499,7 +515,7 @@ impl JS8Protocol {
         let icrc12 = icrc12 ^ 42u16;
         // println!("expected={:#014b},\nactual  ={:#014b}", 956, icrc12);
 
-        let mut cbits = BitVec::<usize>::new();
+        let mut cbits = BitVec::<u8>::new();
         cbits.extend(packet.0);
         for v in cbits.chunks_exact_mut(6) {
             v.reverse();
@@ -525,6 +541,11 @@ impl JS8Protocol {
         cbits.extend(&icrc12.view_bits::<Lsb0>()[..12]);
         assert!(cbits.len() == 87);
         Some(Js8Frame(cbits))
+    }
+
+
+    pub fn genjs8ldpc(frame: Js8Frame) -> Js8LDPCFrame {
+        Js8LDPCFrame(encode174(frame.0))
     }
 }
 
@@ -669,11 +690,12 @@ pub fn pack75(msg: &str) -> Option<[u8; 10]> {
 /// JS8Call source code use truncated polynomial 0xc06
 /// return boost::augmented_crc<12, 0xc06> (data, 11);
 pub fn crc12(data: &[u8]) -> u16 {
-    // let mut crc12 = Crc::<u16>::new(0xc06, 12, 0x00, 0x00, false);
-    // crc12.update(data)
     let mut input = Vec::<u8>::new();
     input.extend(data);
     input.reverse();
+
+    // let mut crc12 = Crc::<u16>::new(0xc06, 12, 0x00, 0x00, false);
+    // crc12.update(data)
     let mut bv = BitVec::<u8,Lsb0>::new();
     bv.extend(std::iter::repeat(false).take(data.len() * 8));
     for (slot, byte) in bv
@@ -690,15 +712,15 @@ pub fn mycrc12(data: BitVec<u8,Lsb0>) -> u16
 {
     let mut data = data.clone();
     data.reverse();
-    print!("reversed input=");
-    for (i, bit) in data.chunks_exact(1).enumerate() {
-        let b = (bit.load::<u8>() & 0b1) as u16;
-        print!("{}", b);
-        if (i+1) % 4 == 0 {
-            print!("_");
-        }
-    }
-    println!("");
+    // print!("reversed input=");
+    // for (i, bit) in data.chunks_exact(1).enumerate() {
+    //     let b = (bit.load::<u8>() & 0b1) as u16;
+    //     print!("{}", b);
+    //     if (i+1) % 4 == 0 {
+    //         print!("_");
+    //     }
+    // }
+    // println!("");
     const MASK12: u16 = 0b1000_0000_0000;
     let mut register: u16 = 0x0000;
     for (_, bit) in data.chunks_exact(1).enumerate() {
@@ -735,8 +757,9 @@ pub fn pack87(msg: &str) -> Option<[u8; 11]> {
     Some(result)
 }
 
-pub fn create_generator_matrix() -> [[u8; 87]; 87] {
-    let raw_gen_matrix: [[u16; 11]; 87] = [
+pub fn create_generator_matrix() -> [[bool; 87]; 87] {
+    const M: usize = 87;
+    let raw_gen_matrix: [[u16; 11]; M] = [
         [
             0x23, 0xbb, 0xa8, 0x30, 0xe2, 0x3b, 0x6b, 0x6f, 0x50, 0x98, 0x2e,
         ],
@@ -999,25 +1022,31 @@ pub fn create_generator_matrix() -> [[u8; 87]; 87] {
             0x3f, 0x23, 0x1f, 0x21, 0x20, 0x55, 0x37, 0x1c, 0xf3, 0xe2, 0xa2,
         ],
     ];
-    let mut gen = [[0 as u8; 87]; 87];
-    for i in 0..87 {
-        for j in 1..11 {
-            let istr = raw_gen_matrix[i][j - 1];
-            for jj in 1..8 {
-                let icol = (j - 1) * 8 + jj;
+    let mut gen = [[false; M]; M];
+    for i in 0..M {
+        for j in 0..11 {
+            // read(g(i)( (j-1)*2+1:(j-1)*2+2 ),"(Z2)") istr
+            let istr = raw_gen_matrix[i][j];
+            for jj in 0..8 {
+                //icol=(j-1)*8+jj
+                let icol = j * 8 + jj;
                 if icol < 87 {
-                    if 1 == ((istr >> (8 - jj)) & 0x1) {
-                        gen[i][icol] = 1;
+                    //            if( btest(istr,8-jj) ) gen(i,icol)=1
+                    if 1 == ((istr >> (7 - jj)) & 0x1) {
+                        gen[i][icol] = true;
                     }
                 }
             }
         }
     }
     assert!(gen.len() == 87);
+    assert!(gen[0].len() == 87);
+    // 00100001010011000010011011101100111 
     gen
 }
 
-pub fn encode174(message: [u8; 10]) -> Option<[u8; 11]> {
+pub fn encode174(message: BitVec::<u8,Lsb0>) -> BitArr!(for 174, in u8, Lsb0)
+{
     const N: usize = 174;
     const M: usize = 87;
     const K: usize = N - M;
@@ -1033,18 +1062,37 @@ pub fn encode174(message: [u8; 10]) -> Option<[u8; 11]> {
         149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166,
         167, 168, 169, 170, 171, 172, 173,
     ];
-    //   let mut pchecks = [0 as u8; K];
-    //   for i in 1..M {
-    //     let mut nsum: u32 =0;
-    //     for j in 1..K {
-    //         nsum=nsum+message[j]*gen[i][j];
-    //     }
-    //     pchecks[i]= nsum % 2;
-    //      }
-    // itmp(1:M)=pchecks
-    // itmp(M+1:N)=message(1:K)
+
+    let mut pchecks = bitarr![u8, Lsb0; 0; M];
+    for i in 0..M {
+        let mut nsum = false;
+        for j in 0..K {
+            nsum = nsum ^ (message[j] & gen[i][j]);
+        }
+        pchecks.set(i, nsum);
+    }
+
+    // For DR4CNK: KN4CRD: AGN?
+    // let expected_pchecks="010001011000000011110111010100110011110110010001100010000000101000010101011001110001100";
+    // let actual_pchecks: Vec<String> = pchecks[..87].chunks_exact(1).map(|v| {format!("{}", v.load::<u8>())}).collect();
+    // assert_eq!(M, actual_pchecks.len());
+    // let actual_pchecks = actual_pchecks.join("");
+    // assert_eq!(expected_pchecks, actual_pchecks);
+
+    let mut itmp = bitarr![u8, Lsb0; 0; N]; //[0 as u8; N];
+    //itmp(1:M)=pchecks
+    itmp[0..M+1].copy_from_bitslice(&pchecks[..]);
+    //itmp(M+1:N)=message(1:K)
+    itmp[M..N].copy_from_bitslice(&message[0..K]);
+    
+    let mut codeword = bitarr![u8, Lsb0; 0; 174];
     // codeword(colorder+1)=itmp(1:N)
-    None
+    for (i, v) in colorder.iter().zip(itmp.chunks(1)) {
+        let v = v[0];
+        let i = *i;
+        codeword.set(i, v);
+    }
+    codeword
 }
 
 #[cfg(test)]
@@ -1054,6 +1102,7 @@ mod tests {
     extern crate quickcheck;
 
     use bitvec::prelude::*;
+    use std::fmt::format;
     use std::str::FromStr;
 
     use crate::compound::BaseGroup;
@@ -1061,6 +1110,7 @@ mod tests {
     use crate::js8frame::SnrReport;
     use crate::js8frame::{Command, Frame};
     use crate::pack::JS8Protocol;
+    use crate::pack::encode174;
     use crate::pack::{char_index, fmtmsg, grid2deg, GridError};
     use crate::pack::{crc12, pack28, pack75, pack_grid_or_report};
     use crate::pack::{Js8PackedCompound, Js8Packet};
@@ -1444,12 +1494,20 @@ mod tests {
         let frame =
             JS8Protocol::genjs8frame(packet, crate::js8frame::TransmissionType::JS8CallUnique)
                 .expect("");
-        let frame_bits: u128 = frame.into();
+        let frame_bits: u128 = frame.clone().into();
         //assert_eq!(ft8msgbits, frame_bits);
         assert_eq!(
             format!("{:#089b}", ft8msgbits),
             format!("{:#089b}", frame_bits)
         );
+
+        let codeword = JS8Protocol::genjs8ldpc(frame);
+        let codeword = format!("{:?}", codeword);
+
+        assert_eq!(
+            "010010110000011110110101100000010001110000111111000100001001000001010101100011011110000011010111001111111001111110100110001011100010111111010111101111000000000011001110111100",
+            codeword);
+
     }
 
     #[test]

@@ -8,6 +8,9 @@ edition = "2021"
 [dependencies]
 async-trait = "0.1.52"
 regex = "1"
+crc="3.0.0"
+crc_all = "0.2.2"
+crc-any = "2.4.3"
 strum = { version = "0.24", features = ["derive"] }
 strum_macros = "0.24"
 lazy_static = "1.4.0"
