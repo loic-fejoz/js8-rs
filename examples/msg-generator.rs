@@ -1,6 +1,8 @@
 #[macro_use]
 pub extern crate async_trait;
 
+use clap::Parser;
+
 use async_io::Timer;
 use futuresdr::log::debug;
 use js8::pack::JS8Protocol;
@@ -20,20 +22,52 @@ use js8::strobe::Strobe;
 use js8::modulator::ContinuousPhaseModulator;
 use js8::compound::Compound;
 
+#[derive(Parser, Debug)]
+#[clap(author="Loïc Fejoz", version="0.0.1")]
+/// Play JS8 message
+struct Args {
+    #[clap(short, long, default_value = "F4SWL")]
+    /// Author of the message
+    from: String,
+
+    #[clap(short, long, default_value = "F4SWL")]
+    /// target of the message
+    to: String,
+
+    #[clap(short, long, default_value = " AGN?")]
+    /// command of the message
+    cmd: String,
+
+    #[clap(short, long, default_value_t = 1330.0)]
+    /// Base frequency to generate message
+    basefreq: f32,
+
+    #[clap(short, long)]
+    /// string-based message to parse
+    message: Option<String>,
+}
+
 fn main() -> Result<()> {
+    let args = Args::parse();
+    println!("Configuration {:?}", args);
+
     let mut fg = Flowgraph::new();
 
     const SAMPLE_RATE: u32 = 48_000;
-    const BASE_FREQ: f32 = 1330.0;
     const TONE_SPACING: f32 = 10.0;
     const PERIOD_MS: u128 = 10_000;
 
-    let f = Frame::FrameDirectedMessage {
-        from: Some(Compound::from_str("DR4CNK").expect("valid callsign")),
-        to: Some(Compound::from_str("KN4CRD").expect("valid callsign")),
-        cmd: Some(Command::AgainQuestion),
-        num: None,
-    };
+    let f;
+    if let Some(message) = args.message {
+        f = Frame::from_str(&message).expect("invalid message");
+    } else {
+        f = Frame::FrameDirectedMessage {
+            from: Some(Compound::from_str(&args.from).expect("valid callsign")),
+            to: Some(Compound::from_str(&args.to).expect("valid callsign")),
+            cmd: Some(Command::from_str(&args.cmd).expect("valid command")),
+            num: None,
+        }
+    }
 
     let f = JS8Protocol::pack_directed_frame(f).expect("");
     let tones = JS8Protocol::genjs8(
@@ -83,7 +117,7 @@ fn main() -> Result<()> {
     let fsk = ContinuousPhaseModulator::new(0.0, SAMPLE_RATE, 0);
     let tone_converter = ApplyIntoIter::new(move |a_tone: &u8| {
         fsk.emit(
-            BASE_FREQ + (*a_tone as f32) * TONE_SPACING,
+            args.basefreq + (*a_tone as f32) * TONE_SPACING,
             SAMPLE_RATE,
             4*1200 as usize)
         .map(|v: Complex<f32>| v.re)
