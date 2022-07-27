@@ -1,4 +1,3 @@
-use std::result;
 use std::fmt;
 use std::str::FromStr;
 
@@ -228,6 +227,34 @@ pub enum FrameType {
     FrameDataCompressed = 0b110, // actually 0b11x
 }
 
+pub enum CostasTones{
+    Config1,
+    Config2,
+}
+
+impl CostasTones {
+    pub fn get_tones_a(&self) -> &[u8] {
+        match self {
+            CostasTones::Config1 => &[4,2,5,6,1,3,0],
+            CostasTones::Config2 => &[0,6,2,3,5,4,1]
+        }
+    }
+
+    pub fn get_tones_b(&self) -> &[u8] {
+        match self {
+            CostasTones::Config1 => &[4,2,5,6,1,3,0],
+            CostasTones::Config2 => &[1,5,0,2,3,6,4]
+        }
+    }
+
+    pub fn get_tones_c(&self) -> &[u8] {
+        match self {
+            CostasTones::Config1 => &[4,2,5,6,1,3,0],
+            CostasTones::Config2 => &[2,5,0,6,4,1,3]
+        }
+    }
+}
+
 pub struct JS8Protocol {}
 
 impl JS8Protocol {
@@ -433,7 +460,7 @@ impl JS8Protocol {
             result.extend(packed_from);
             result.extend(packed_flag);
 
-            let debug_all = result.load::<u64>();
+            // let debug_all = result.load::<u64>();
             // (3+28+28+5)  + 2+6 = 72
             return Some(Js8Packet(JS8Protocol::pack72bits(result, packed_extra)?));
         }
@@ -546,6 +573,27 @@ impl JS8Protocol {
 
     pub fn genjs8ldpc(frame: Js8Frame) -> Js8LDPCFrame {
         Js8LDPCFrame(encode174(frame.0))
+    }
+
+    pub fn genjs8tones(frame: Js8LDPCFrame, costas: CostasTones) -> [u8; 58+21] {
+        const NS: usize=21;
+        const ND: usize = 58;
+        const NN: usize = NS + ND;
+        let mut tones = [0u8; NN];
+        tones[0..7].copy_from_slice(costas.get_tones_a());
+        tones[36..36+7].copy_from_slice(costas.get_tones_b());
+        tones[NN-7..NN].copy_from_slice(costas.get_tones_c());
+        let mut k = 7;
+        for j in 1..ND+1 {
+            let i = 3 * j - 2 - 1;
+            k += 1;
+            if j == 30 {
+                k += 7;
+            }
+            let indx = (frame.0[i] as u8) * 4 + (frame.0[i+1] as u8) * 2 + (frame.0[i+2] as u8);
+            tones[k-1] = indx;
+        }
+        tones
     }
 }
 
@@ -1102,15 +1150,13 @@ mod tests {
     extern crate quickcheck;
 
     use bitvec::prelude::*;
-    use std::fmt::format;
     use std::str::FromStr;
 
     use crate::compound::BaseGroup;
     use crate::compound::Compound;
-    use crate::js8frame::SnrReport;
     use crate::js8frame::{Command, Frame};
     use crate::pack::JS8Protocol;
-    use crate::pack::encode174;
+    use crate::pack::CostasTones;
     use crate::pack::{char_index, fmtmsg, grid2deg, GridError};
     use crate::pack::{crc12, pack28, pack75, pack_grid_or_report};
     use crate::pack::{Js8PackedCompound, Js8Packet};
@@ -1502,12 +1548,18 @@ mod tests {
         );
 
         let codeword = JS8Protocol::genjs8ldpc(frame);
-        let codeword = format!("{:?}", codeword);
+        let actual_codeword = format!("{:?}", codeword);
 
         assert_eq!(
             "010010110000011110110101100000010001110000111111000100001001000001010101100011011110000011010111001111111001111110100110001011100010111111010111101111000000000011001110111100",
-            codeword);
+            actual_codeword);
 
+        let tones = JS8Protocol::genjs8tones(codeword, CostasTones::Config2);
+        const EXPECTED_TONES: [u8; 58+21] = [0u8, 6, 2, 3, 5, 4, 1, 2, 2, 6, 0, 3, 6, 6, 5, 4, 0, 2, 1, 6, 0, 7, 7, 0, 4, 1, 1, 0, 1, 2, 5, 4, 3, 3, 6, 0, 1, 5, 0, 2, 3, 6, 4, 3, 2, 7, 1, 7, 7, 1, 7, 6, 4, 6, 1, 3, 4, 2, 7, 7, 2, 7, 5, 7, 0, 0, 0, 3, 1, 6, 7, 4, 2, 5, 0, 6, 4, 1, 3, ];
+        assert_eq!(
+            EXPECTED_TONES,
+            tones
+        );
     }
 
     #[test]
