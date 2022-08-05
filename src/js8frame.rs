@@ -176,7 +176,7 @@ pub struct SnrReport(pub i8);
 
 impl SnrReport {
     fn new(value: i8) -> SnrReport {
-        SnrReport(-30.max(value).min(31))
+        SnrReport((-30).max(value).min(31))
     }
 }
 
@@ -262,13 +262,14 @@ impl std::str::FromStr for Frame {
     type Err = ::strum::ParseError;
 
     fn from_str(s: &str) -> ::core::result::Result<Self, Self::Err> {
+        static SENDER_CALLSIGN_PATTERN: &str = "((?P<sender>[@]?[A-Z0-9/]+):\\s+)?";
         static CALLSIGN_PATTERN: &str = "(?P<callsign>[@]?[A-Z0-9/]+)";
         static OPTIONAL_CMD_PATTERN: &str = "(?P<cmd>\\s?(?:AGN[?]|QSL[?]|HW CPY[?]|MSG TO[:]|SNR[?]|INFO[?]|GRID[?]|STATUS[?]|QUERY MSGS[?]|HEARING[?]|(?:(?:STATUS|HEARING|QUERY CALL|QUERY MSGS|QUERY|CMD|MSG|NACK|ACK|73|YES|NO|HEARTBEAT SNR|SNR|QSL|RR|SK|FB|INFO|GRID|DIT DIT))|[?> ]))?";
         static OPTIONAL_NUM_PATTERN: &str = "(?P<num>\\s?[-+]?(?:3[01]|[0-2]?[0-9]))?";
 
         lazy_static! {
             static ref DIRECTED_FRAME_PATTERN: String =
-                "^".to_owned() + CALLSIGN_PATTERN + OPTIONAL_CMD_PATTERN + OPTIONAL_NUM_PATTERN;
+                "^".to_owned() + SENDER_CALLSIGN_PATTERN + CALLSIGN_PATTERN + OPTIONAL_CMD_PATTERN + OPTIONAL_NUM_PATTERN;
             static ref DIRECTED_RE: Regex = Regex::new(&DIRECTED_FRAME_PATTERN).unwrap();
             static ref CALLSIGN_RE: Regex = Regex::new(CALLSIGN_PATTERN).unwrap();
             static ref OPTIONAL_CMD_RE: Regex = Regex::new(OPTIONAL_CMD_PATTERN).unwrap();
@@ -280,9 +281,16 @@ impl std::str::FromStr for Frame {
                     .unwrap();
         }
         if let Some(x) = DIRECTED_RE.captures(s) {
+            let mut from: Option<Compound> = None;
             let mut the_cmd: Option<Command> = None;
             let mut the_callsign: Option<Compound> = None;
             let mut the_num: Option<SnrReport> = None;
+            if let Some(sender) = x.name("sender") {
+                let sender = sender.as_str();
+                if let Ok(callsign) = Compound::from_str(sender) {
+                    from = Some(callsign);
+                }
+            }
             if let Some(callsign) = x.name("callsign") {
                 let callsign = callsign.as_str();
                 if let Ok(callsign) = Compound::from_str(callsign) {
@@ -302,7 +310,7 @@ impl std::str::FromStr for Frame {
                 }
             }
             let a_frame = Frame::FrameDirectedMessage {
-                from: None,
+                from: from,
                 to: the_callsign,
                 cmd: the_cmd,
                 num: the_num
@@ -586,6 +594,28 @@ mod tests {
                 num: Some(SnrReport(-10)),
             }.to_string(),
             "@EMCOMM HEARTBEAT SNR -10"
+        );
+
+        assert_eq!(
+            Frame::FrameDirectedMessage {
+                from: None,
+                to: Some(Compound::from_str("KN4CRD").expect("valid callsign")),
+                cmd: Some(Command::Snr),
+                num: Some(SnrReport(12)),
+            },
+            Frame::from_str(&"KN4CRD SNR +12")
+                .expect("KN4CRD SNR +12 is a valid message")
+        );
+
+        assert_eq!(
+            Frame::FrameDirectedMessage {
+                from: Some(Compound::from_str("F4SWL").expect("valid callsign")),
+                to: Some(Compound::from_str("KN4CRD").expect("valid callsign")),
+                cmd: Some(Command::Snr),
+                num: Some(SnrReport(12)),
+            },
+            Frame::from_str(&"F4SWL: KN4CRD SNR +12")
+                .expect("F4SWL: KN4CRD SNR +12 is a valid message")
         );
     }
 

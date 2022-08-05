@@ -17,7 +17,7 @@ use futuresdr::runtime::Runtime;
 use futuresdr::blocks::FiniteSource;
 use futuresdr::num_complex::Complex;
 
-use js8::js8frame::{Command, Frame};
+use js8::js8frame::{Command, Frame, SnrReport};
 use js8::strobe::Strobe;
 use js8::modulator::ContinuousPhaseModulator;
 use js8::compound::Compound;
@@ -37,6 +37,10 @@ struct Args {
     #[clap(short, long, default_value = " AGN?")]
     /// command of the message
     cmd: String,
+
+    #[clap(short, long,)]
+    /// command of the message
+    num: Option<SnrReport>,
 
     #[clap(short, long, default_value_t = 1330.0)]
     /// Base frequency to generate message
@@ -69,9 +73,11 @@ fn main() -> Result<()> {
             from: Some(Compound::from_str(&args.from).expect("valid callsign")),
             to: Some(Compound::from_str(&args.to).expect("valid callsign")),
             cmd: Some(Command::from_str(&args.cmd).expect("valid command")),
-            num: None,
+            num: args.num,
         }
     }
+
+    println!("Sending {}", f);
 
     let f = JS8Protocol::pack_directed_frame(f).expect("");
     let tones = JS8Protocol::genjs8(
