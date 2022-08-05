@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, Instant};
 use std::str::FromStr;
 
 use futuresdr::anyhow::Result;
-use futuresdr::blocks::ApplyIntoIter;
+use futuresdr::blocks::{ApplyIntoIter, FileSink};
 use futuresdr::blocks::audio::AudioSink;
 use futuresdr::runtime::Flowgraph;
 use futuresdr::runtime::Runtime;
@@ -45,6 +45,10 @@ struct Args {
     #[clap(short, long)]
     /// string-based message to parse
     message: Option<String>,
+
+    #[clap(short, long)]
+    /// output filename
+    output: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -112,7 +116,6 @@ fn main() -> Result<()> {
         
     });
     arrival_pattern_shaper.set_instance_name("every 10s wall clock");
-    let arrival_pattern_shaper = fg.add_block(arrival_pattern_shaper);
     
     let fsk = ContinuousPhaseModulator::new(0.0, SAMPLE_RATE, 0);
     let tone_converter = ApplyIntoIter::new(move |a_tone: &u8| {
@@ -124,12 +127,19 @@ fn main() -> Result<()> {
     });
     let tone_converter = fg.add_block(tone_converter);
 
-    let snk = AudioSink::new(SAMPLE_RATE, 1);
-    let snk = fg.add_block(snk);
-
-    fg.connect_stream(src, "out", arrival_pattern_shaper, "in")?;
-    fg.connect_stream(arrival_pattern_shaper, "out", tone_converter, "in")?;
-    fg.connect_stream(tone_converter, "out", snk, "in")?;
+    if args.output.is_none() {
+        let arrival_pattern_shaper = fg.add_block(arrival_pattern_shaper);
+        let snk = AudioSink::new(SAMPLE_RATE, 1);
+        let snk = fg.add_block(snk);
+        fg.connect_stream(src, "out", arrival_pattern_shaper, "in")?;
+        fg.connect_stream(arrival_pattern_shaper, "out", tone_converter, "in")?;
+        fg.connect_stream(tone_converter, "out", snk, "in")?;
+    } else {
+        let snk = FileSink::<f32>::new(args.output.unwrap());
+        let snk = fg.add_block(snk);
+        fg.connect_stream(src, "out", tone_converter, "in")?;
+        fg.connect_stream(tone_converter, "out", snk, "in")?;
+    }
 
     Runtime::new().run(fg)?;
 
